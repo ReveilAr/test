@@ -1,0 +1,7 @@
+# Raw file conversion (Thermo .raw -> mzML). ThermoRawFileParser runs on Mono.
+name: atlas-ms-conversion
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - thermorawfileparser=1.4.5

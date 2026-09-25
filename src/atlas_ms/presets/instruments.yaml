@@ -1,0 +1,37 @@
+# Instrument presets.
+#
+# Choosing a preset (in the app, or with `atlas-ms init --instrument`) copies
+# these values into the project's parameters. They are starting points: every
+# value can still be changed afterwards. Each preset is organised by parameter
+# section (see atlas_ms/config.py), so one preset can set the tolerances of
+# several processing steps at once.
+#
+# Orbitrap values are UmetaFlow's defaults (tuned on an Orbitrap ID-X).
+
+orbitrap:
+  description: Thermo Orbitrap (Q Exactive, Exploris, ID-X) with UHPLC
+  instrument:
+    mass_error_ppm: 10.0        # m/z tolerance when following a mass trace over time
+    noise_threshold: 10000.0    # centroids below this intensity are ignored
+    chrom_fwhm_s: 5.0           # typical chromatographic peak width (FWHM, s)
+    min_trace_length_s: 5.0     # shorter mass traces are discarded
+  alignment:
+    mz_max_ppm: 10.0
+  linking:
+    mz_tol_ppm: 8.0
+  gap_filling:
+    mz_window_ppm: 10.0
+
+qtof:
+  description: Q-TOF (Bruker, Agilent, Sciex, Waters) with UHPLC
+  instrument:
+    mass_error_ppm: 20.0
+    noise_threshold: 1000.0
+    chrom_fwhm_s: 5.0
+    min_trace_length_s: 5.0
+  alignment:
+    mz_max_ppm: 20.0
+  linking:
+    mz_tol_ppm: 15.0
+  gap_filling:
+    mz_window_ppm: 20.0

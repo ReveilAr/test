@@ -1,0 +1,17 @@
+# Main environment: runs Snakemake, the preprocessing and (later) the app.
+#
+#   conda env create -f environment.yml    (from the repository root)
+#   conda activate atlas-ms
+#
+# Python packages are listed once, in pyproject.toml, and installed by pip
+# with the package itself (editable mode, so the workflow/ folder next to it
+# is found). Tools with conflicting dependencies get their own environments
+# in workflow/envs/, created automatically by Snakemake when needed.
+name: atlas-ms
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - -e .[dev]
