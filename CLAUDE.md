@@ -21,7 +21,13 @@ keeps the decisions and the rules every session must follow.
     written, 13% missing values.
   - Run 2 also showed that gap filling mixed two intensity scales, and the
     OpenMS peptide isotope model used for targets. Gap filling was reworked
-    (see Preprocessing); run 3 is to be checked.
+    (see Preprocessing).
+  - Run 3, with the reworked gap filling: about 930–1,110 detected /
+    re-extracted pairs per run and 1,237–1,346 gaps filled per run. Scale
+    factors (detected / re-extracted) were 1.43, 1.24, 1.10 and 1.21: the
+    symmetric model under-integrates tailing peaks. Next check: whether the
+    ratio depends on intensity (diagnostic log line: weakest vs. strongest
+    quarter). If it does, the factor should become intensity-dependent.
 - **Next:** milestone 2 (network + first app).
 - **Name:** ATLAS-MS is a placeholder (Python package `atlas_ms`, command
   `atlas-ms`). The repo is private and licensing is decided later.
