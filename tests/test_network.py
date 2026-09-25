@@ -1,14 +1,28 @@
 """Network construction steps (pure logic) and the network of the synthetic study."""
 
+import shutil
+
 import networkx as nx
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
+from ms2deepscore.models import SiameseSpectralModel
+from ms2deepscore.SettingsMS2Deepscore import SettingsMS2Deepscore
 
-from atlas_ms.config import NetworkSettings, ScoringSettings
+from atlas_ms.config import NetworkSettings, ProjectConfig, ScoringSettings
 from atlas_ms.network.graph import filter_edges, limit_family_size, number_groups
-from atlas_ms.network.scoring import candidate_edges
-from test_workflow import feature_of
+from atlas_ms.network.model_files import DEFAULT_MODEL_PATH
+from atlas_ms.network.scoring import candidate_edges, score_spectra
+from atlas_ms.network.spectra import load_spectra
+from conftest import snakemake
+from test_workflow import feature_of, planned_jobs
+
+
+def tiny_model(path) -> str:
+    """An untrained, very small MS2DeepScore model (the real one is downloaded on first use)."""
+    SiameseSpectralModel(SettingsMS2Deepscore(base_dims=(32,), embedding_dim=8)).save(str(path))
+    return str(path)
 
 
 def edges(rows):
@@ -93,17 +107,9 @@ def test_network_of_the_synthetic_study(processed_project):
 
 
 def test_ms2deepscore_scoring(processed_project, tmp_path):
-    """MS2DeepScore path, with a tiny untrained model (the real one is downloaded on first use)."""
-    from ms2deepscore.models import SiameseSpectralModel
-    from ms2deepscore.SettingsMS2Deepscore import SettingsMS2Deepscore
-
-    from atlas_ms.network.scoring import score_spectra
-    from atlas_ms.network.spectra import load_spectra
-
-    model_file = tmp_path / "tiny.pt"
-    SiameseSpectralModel(SettingsMS2Deepscore(base_dims=(32,), embedding_dim=8)).save(str(model_file))
+    """MS2DeepScore scoring, with a tiny untrained model."""
     spectra = load_spectra(processed_project.root / "work" / "network" / "spectra.pickle")
-    settings = ScoringSettings(score="ms2deepscore", ms2deepscore_model=str(model_file))
+    settings = ScoringSettings(score="ms2deepscore", ms2deepscore_model=tiny_model(tmp_path / "tiny.pt"))
     pool = score_spectra(spectra, settings)
     # An untrained model scores everything alike: every pair is a candidate.
     n = len(spectra)
@@ -113,9 +119,31 @@ def test_ms2deepscore_scoring(processed_project, tmp_path):
 
 
 def test_config_rejects_inconsistent_network_cutoffs():
-    from atlas_ms.config import ProjectConfig
-
     with pytest.raises(ValueError, match="min_candidate_score"):
         ProjectConfig.from_dict({"network": {"min_score": 0.2}})
     with pytest.raises(ValueError, match="candidates_per_spectrum"):
         ProjectConfig.from_dict({"network": {"top_k": 80}})
+
+
+def test_ms2deepscore_through_the_workflow(processed_project, tmp_path):
+    """Switching to MS2DeepScore re-runs only scoring and network; the model is a rule input."""
+    root = tmp_path / "copy"
+    shutil.copytree(processed_project.root, root, symlinks=True)
+    config = yaml.safe_load((root / "project.yaml").read_text())
+
+    # Without a model file, the pretrained model would be downloaded first.
+    config["scoring"]["score"] = "ms2deepscore"
+    (root / "project.yaml").write_text(yaml.safe_dump(config))
+    jobs = planned_jobs(snakemake(root, "--dry-run"))
+    if not DEFAULT_MODEL_PATH.exists():
+        assert jobs["download_ms2deepscore_model"] == 1
+
+    # With a local model: scoring and network only, and the run succeeds.
+    config["scoring"]["ms2deepscore_model"] = tiny_model(tmp_path / "tiny.pt")
+    config["network"]["min_score"] = 0.3  # an untrained model's scores are arbitrary
+    (root / "project.yaml").write_text(yaml.safe_dump(config))
+    assert planned_jobs(snakemake(root, "--dry-run")) == {"score_spectra": 1, "build_network": 1, "all": 1}
+    result = snakemake(root)
+    assert result.returncode == 0, result.stderr[-3000:]
+    assert (root / "results" / "network" / "nodes.parquet").exists()
+

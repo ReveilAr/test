@@ -34,10 +34,15 @@ keeps the decisions and the rules every session must follow.
     `results/quant_gap_filled.parquet` (and `features.n_gap_filled`) for the
     statistics.
   - **Preprocessing is considered validated on real data.**
-- **Milestone 2 in progress.** Network backend done: `atlas_ms.network`
-  (spectrum QC → modified cosine / MS2DeepScore candidate pool → GNPS-style
-  network, families, Louvain communities, layout, GraphML). Next: the Panel
-  app (Setup + Network tabs).
+- **Milestone 2 done** (awaiting the user's first real network).
+  - `atlas_ms.network`: spectrum QC → modified cosine or MS2DeepScore
+    candidate pool → GNPS-style network, families, Louvain communities,
+    layout, GraphML.
+  - `atlas_ms.app` (`atlas-ms app`): sidebar open / create / run; Setup tab
+    (samples, presets, adducts, parameters); Network tab (network ↔ table
+    selection, MS2 spectrum, chromatograms from the mzML).
+  - Next: tuning on the real network (milestone 5), then milestone 3
+    (annotation).
 - **Name:** ATLAS-MS is a placeholder (Python package `atlas_ms`, command
   `atlas-ms`). The repo is private and licensing is decided later.
 
@@ -50,7 +55,7 @@ keeps the decisions and the rules every session must follow.
 - **Environment:** `conda env create -f environment.yml` installs the
   package in editable mode. Python dependencies are listed once, in
   `pyproject.toml`.
-- **Tests:** `pytest` (about 70 s: matchms and PyTorch imports are slow). `tests/synthetic.py` generates the
+- **Tests:** `pytest` (about 1.5 min: matchms and PyTorch imports are slow). `tests/synthetic.py` generates the
   LC-MS runs. Every change to a processing step needs a test with an
   expected value on the synthetic study.
 - **Running:** `atlas-ms init <project> <files>` then `atlas-ms run <project>`.
@@ -203,6 +208,16 @@ keeps the decisions and the rules every session must follow.
   - The pretrained model is `ms2deepscore_model.pt` from Zenodo record
     17826815, loaded with `load_model(path, allow_legacy=True)`.
   - Tests use a tiny untrained `SiameseSpectralModel(SettingsMS2Deepscore(base_dims=(32,), embedding_dim=8))`.
+- **Panel 1.9:** widgets take `label=` (not `name=`) and buttons take `color=`
+  (not `button_type=`); the old names give deprecation warnings.
+- **pyopenms-viz 1.2:** `df.plot(kind="spectrum" | "chromatogram",
+  backend="ms_bokeh", show_plot=False)` returns a Bokeh figure. Its
+  `__version__` string still says 1.0.1.
+- **Checking the app:** serve it (`atlas-ms app <project> --no-browser
+  --port N`) and screenshot it with Playwright. Use the preinstalled
+  Chromium (`executable_path="/opt/pw-browsers/chromium"`): the pip
+  Playwright wants a newer build. Never `pkill -f "atlas-ms app"`: the
+  pattern matches the shell running it.
 - **Modified cosine with one matched fragment** links unrelated spectra by
   coincidence. Example in the synthetic data: TG vs CE at 0.78, through one
   shifted fragment. Keep `min_matched_peaks` above 1.

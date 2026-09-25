@@ -4,8 +4,9 @@ This document describes how the pipeline is built. The decisions behind it are
 recorded in [`CLAUDE.md`](../CLAUDE.md). ATLAS-MS is a placeholder name
 (Python package `atlas_ms`, command `atlas-ms`).
 
-Milestone 1 (preprocessing, §6 stages 1–5) is implemented. The other sections
-describe the plan.
+Milestones 1 (preprocessing, §6 stages 1–5) and 2 (network, §6 stages 6–8,
+and the app's Setup and Network tabs, §11) are implemented. The other
+sections describe the plan.
 
 ## 1. Scope
 
@@ -53,7 +54,7 @@ flowchart LR
     setup -- "Run (subprocess)" --> wf
     cfg --> wf
     wf -- writes --> res
-    res -- "DuckDB reads" --> view
+    res -- "pandas reads" --> view
 ```
 
 There are three layers, and they only talk to each other through the project folder:
@@ -88,10 +89,10 @@ There are three layers, and they only talk to each other through the project fol
 │   ├── logs.py                # rule log files (captures OpenMS C++ output too)
 │   ├── preprocessing/         # msdata, features, alignment, annotate, linking, gap_filling, export
 │   ├── contracts.py           # (M2+) table schemas, importable from every env
-│   ├── network/               # (M2) QC, scoring, construction, families, layout, export
+│   ├── network/               # spectra (QC), scoring, graph (construction, families, layout, GraphML), model_files
 │   ├── annotation/            # (M3) plugin base, annotators, lipids/, harmonize.py
 │   ├── stats/                 # (M4) FBMN-STATS port
-│   └── app/                   # (M2+) Panel app: state.py, tabs/, widgets/
+│   └── app/                   # Panel app: main, setup_view, run_view, network_view, data
 └── tests/                     # pytest; synthetic.py generates LC-MS runs
 ```
 
@@ -117,7 +118,7 @@ my_project/
 │   ├── features.parquet  quant.parquet
 │   ├── gnps/             # ms2_spectra.mgf, quantification_table.txt, metadata.tsv,
 │   │                     # iimn_supplementary_pairs.csv (GNPS FBMN, "OpenMS" format)
-│   ├── network/          # (M2) edges.parquet, nodes.parquet (incl. layout x/y), network.graphml
+│   ├── network/          # nodes.parquet (family, community, x/y, QC), edges.parquet, network.graphml
 │   ├── annotations/      # (M3) <source>.parquet per annotator, candidates.parquet, best.parquet
 │   ├── ms2lda/           # (M4) motifs.parquet, feature_motifs.parquet
 │   └── stats/            # (M4) cleaned_quant.parquet, blank_flags.parquet
@@ -173,9 +174,9 @@ step needs the spectra (`atlas_ms.preprocessing.msdata.load_run`).
 | 3 | Alignment and linking (`align`, `annotate_run`, `link`) | core | `work/alignment/*.trafoXML`, `work/consensus/linked.consensusXML` | MapAlignerPoseClustering (reference = run with the most features) → per run, on the aligned RT axis: MetaboliteAdductDecharger + IDMapper (MS2 → features) → FeatureLinkerUnlabeledKD. |
 | 4 | Gap filling (`plan_gap_filling`, `fill_gaps`, `link_gap_filled`) | core | `work/consensus/gap_filled.consensusXML` | Consensus features missing in some runs become targets (with their measured isotope pattern), re-extracted with FeatureFinderMetaboIdent. Detected features are always kept. Re-extracted ones only fill gaps and are converted to the detected intensity scale (monoisotopic share × per-run median ratio). Then decharger → IDMapper (MS2 spectra without peaks are ignored) → linker again. Can be switched off. |
 | 5 | Export (`export`) | core | `results/gnps/*`, `features.parquet`, `quant.parquet` | Detection-fraction filter, then features with MS2 are numbered first (`feature_id` = GNPS row ID = MGF SCANS). pyOpenMS GNPSMGFFile / GNPSQuantificationFile + IIMN pairs, and a GNPS metadata table from `samples.tsv`. We keep the GNPS FBMN schema and don't invent a new one. The Parquet tables cover *all* features (with or without MS2). (M3: SIRIUS `.ms` export with MS1 isotope patterns.) |
-| 6 | Spectrum QC and blank flag | core | `spectra_qc.parquet`, `stats/blank_flags.parquet` | Independent filters only: minimum peak count (low default, because lipid MS2 is sparse), precursor intensity, blank ratio (mean blank / mean sample). **Never filter on the similarity score.** The blank flag is computed once and reused by the network, annotation and stats. |
-| 7 | Scoring | core | `work/similarities.npz` | matchms. `score = modified_cosine` (fragment tolerance from the preset) or `ms2deepscore` (pretrained MS2DeepScore 2 model, embeddings cached, CPU or CUDA picked automatically). Both can be computed side by side for comparison. |
-| 8 | Network | core | `network/edges.parquet`, `nodes.parquet`, `network.graphml` | Top-N pool → score cutoff + minimum matched peaks (cosine only) → top-K per node → iterative removal of the weakest edges while a component exceeds the size cap. Components = molecular families (GNPS definition), Louvain communities inside them (networkx, `resolution` parameter). IIMN adduct edges are kept as a separate edge type. Layout is precomputed per component and packed into a grid, so the app opens instantly. |
+| 6 | Spectrum QC (`spectrum_qc`) | core | `work/network/spectra.pickle`, `spectrum_qc.parquet` | The MGF spectrum of each feature is cleaned (matchms default filters, fragments within ±17 Da of the precursor removed, intensities normalised). Spectra with fewer than `min_peaks` fragments (low default: lipid MS2 is sparse) get no spectral edges. **Never filter on the similarity score.** |
+| 7 | Scoring (`score_spectra`) | core | `work/network/candidates.parquet` | matchms `ModifiedCosineGreedy` (fragment tolerance from the preset, with matched-fragment counts) or MS2DeepScore (pretrained model downloaded once to `~/.cache/atlas-ms/models` by `download_ms2deepscore_model`; CPU or CUDA). Keeps a pool of candidates: the best `candidates_per_spectrum` neighbours of each spectrum above `min_candidate_score`, so network cutoffs never re-run the scoring. |
+| 8 | Network (`build_network`) | core | `results/network/nodes.parquet`, `edges.parquet`, `network.graphml` | Blank features (mean blank / mean sample > `max_blank_ratio`, only when `samples.tsv` lists blanks) lose their candidate edges. Then the GNPS steps: score cutoff + minimum matched fragments (cosine only) → mutual top-K → weakest edges removed while a family exceeds `max_family_size`. IIMN adduct edges are added. Families = connected components (1 = largest, -1 = singleton), Louvain communities inside them. The layout is precomputed per family and packed into a grid. |
 | 9 | Annotation | varies | `annotations/<source>.parquet` | See §7 and §8. |
 | 10 | MS2LDA 2.0 | ms2lda | `ms2lda/*.parquet` | De novo motifs (number of motifs is a parameter) + MotifDB annotation. |
 | 11 | Harmonization | core | `annotations/candidates.parquet`, `best.parquet` | Confidence levels, conflict flags, lipid name normalization, family-level class consensus (MolNetEnhancer logic). |
@@ -387,20 +388,26 @@ Run / Stop, progress bar and log pane.
    BH-FDR, volcano, heatmap, per-feature boxplots, lipid class sums. A
    "colour network by result" button sends the result to tab 1.
 
-**Mechanics:**
-- **Shared state:** one `AppState(param.Parameterized)` holds project,
-  selected features, selected family, colour-by and current stats result.
-  Every view depends on it through `pn.bind` / `param.depends`.
-- **Data access:** DuckDB over the Parquet results for tables and filters.
-  mzML is read only on demand for plots, indexed and cached.
-- **Running Snakemake:** an async subprocess whose stdout is streamed to the
-  log pane. Progress is parsed from Snakemake's "N of M steps" lines. Long
-  rules (SIRIUS, MS2Query) also write `logs/progress/*.json`, polled by a
-  periodic callback. Panel runs with `nthreads` so polling doesn't block
-  the UI.
+**Mechanics (as built in milestone 2):**
+- **Page:** a `FastListTemplate`. The sidebar opens a project folder, creates
+  one from a folder of raw files, and holds Run / Stop. Each view is a
+  `param.Parameterized` class. The Network tab's `selected` feature ids are
+  shared by the network (tap / box select), the feature table and the
+  detail plots.
+- **Data access:** pandas reads the Parquet results, and a small parser
+  reads the MGF (matchms would add about 10 s to start-up). Chromatograms
+  are extracted on demand from the mzML files, opened "on disc"
+  (pyOpenMS `OnDiscMSExperiment`) and mapped onto the aligned RT axis with
+  each run's trafoXML.
+- **Saving:** Setup edits are written only on Save or Run (Run saves first),
+  and are validated by the same code as the pipeline.
+- **Running Snakemake:** an async subprocess (the same command as
+  `atlas-ms run`) whose output is streamed to the log. Progress is parsed
+  from Snakemake's "N of M steps" lines. (Planned: long rules such as SIRIUS
+  and MS2Query will also write `logs/progress/*.json`.)
 - **Performance:** Bokeh WebGL output handles the few thousand nodes that
   100 files produce. Edge bundling is optional because it's slow.
-- **Cytoscape:** a "Send to Cytoscape" button uses `py4cytoscape` to push
+- **Cytoscape (milestone 4):** a "Send to Cytoscape" button uses `py4cytoscape` to push
   the network with a style (group pie charts, labels = best annotation).
   Cytoscape desktop must be open. The GraphML file is always written, so
   Cytoscape isn't required.
@@ -459,9 +466,10 @@ to by path.
    project folder, CLI, Snakefile with conversion → preprocessing → gap
    filling → GNPS export, tests on synthetic data. Still to do: validation
    on the user's dataset against UmetaFlow's output.
-2. **Network + first app.** QC, both scores, construction, families,
+2. **Network + first app (done).** QC, both scores, construction, families,
    layout, GraphML. App with the Setup and Network tabs (network, feature
-   list, pyOpenMS-viz plots), Run button with log.
+   list, pyOpenMS-viz plots), Run button with log. Still to do: a first look
+   at the user's real network, then tuning (milestone 5).
 3. **Annotation.** Library search + public libraries, MS2Query, SIRIUS API,
    lipid module, harmonization with levels, Annotation tab.
 4. **MS2LDA + stats + Cytoscape.** Statistics tab, Cytoscape push.
