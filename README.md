@@ -42,6 +42,7 @@ Results in `my_study/results/`:
 |---|---|
 | `features.parquet` | one row per feature: m/z, RT, charge, number of MS2 spectra, adduct groups |
 | `quant.parquet` | feature intensities, one column per sample |
+| `quant_gap_filled.parquet` | same shape, `True` where the value was re-extracted by gap filling (less precise than a detected value) |
 | `gnps/` | GNPS FBMN input in "OpenMS" format: `ms2_spectra.mgf`, `quantification_table.txt`, `metadata.tsv`, `iimn_supplementary_pairs.csv` |
 
 Feature ids are the same everywhere. Features with MS2 are numbered first,

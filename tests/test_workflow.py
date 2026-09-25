@@ -86,6 +86,15 @@ def test_gap_filling_recovers_the_weak_compound(results):
     assert 150 < ratio < 600
 
 
+def test_gap_filled_values_are_flagged(processed_project, results):
+    flags = pd.read_parquet(processed_project.results_dir / "quant_gap_filled.parquet").set_index("feature_id")
+    cer = feature_of(results["features"], "Cer 34:1;O2 [M+H]+")
+    # Only one value in the whole table was re-extracted: Cer in treat_2.
+    assert flags.to_numpy().sum() == 1
+    assert flags.loc[cer["feature_id"], "treat_2"]
+    assert cer["n_gap_filled"] == 1
+
+
 def test_quantification_follows_the_simulated_change(results):
     tg = feature_of(results["features"], "TG 52:2 [M+NH4]+")
     values = results["quant"].loc[tg["feature_id"]]

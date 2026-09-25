@@ -25,9 +25,15 @@ keeps the decisions and the rules every session must follow.
   - Run 3, with the reworked gap filling: about 930–1,110 detected /
     re-extracted pairs per run and 1,237–1,346 gaps filled per run. Scale
     factors (detected / re-extracted) were 1.43, 1.24, 1.10 and 1.21: the
-    symmetric model under-integrates tailing peaks. Next check: whether the
-    ratio depends on intensity (diagnostic log line: weakest vs. strongest
-    quarter). If it does, the factor should become intensity-dependent.
+    symmetric model under-integrates tailing peaks.
+  - Intensity check (weakest vs. strongest quarter of pairs): 1.12 vs 1.14,
+    1.19 vs 1.20, 1.20 vs 1.29, 1.29 vs 1.56. There is no real intensity
+    dependence except in legio_19 (gaps scaled about 10% high there), so one
+    factor per run is kept. The per-feature ratio IQR is wide (about 0.85–2.0):
+    single gap-filled values are approximate. They are therefore flagged in
+    `results/quant_gap_filled.parquet` (and `features.n_gap_filled`) for the
+    statistics.
+  - **Preprocessing is considered validated on real data.**
 - **Next:** milestone 2 (network + first app).
 - **Name:** ATLAS-MS is a placeholder (Python package `atlas_ms`, command
   `atlas-ms`). The repo is private and licensing is decided later.

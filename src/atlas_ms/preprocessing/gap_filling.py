@@ -258,6 +258,9 @@ def merge_gap_filled(
     for feature in extracted:
         if feature.getMetaValue("label") not in originals:
             feature.setIntensity(feature.getIntensity() * scale)
+            # Mark it: the export flags gap-filled values (they are less
+            # precise than detected ones, see intensity_scale).
+            feature.setMetaValue("gap_filled", "true")
             merged.push_back(feature)
             n_filled += 1
     merged.setUniqueIds()

@@ -11,11 +11,18 @@ rule export:
             else "work/consensus/linked.consensusXML"
         ),
         mzml=expand("work/mzml/{sample}.mzML", sample=NAMES),
+        # Gap-filled feature maps: tell which values were re-extracted.
+        gap_filled=(
+            expand("work/gap_filling/{sample}.featureXML", sample=NAMES)
+            if CFG.gap_filling.enabled
+            else []
+        ),
         # Metadata edits (sample types, ATTRIBUTE_ columns) only re-run this rule.
         samples="samples.tsv",
     output:
         features=RESULTS["features"],
         quant=RESULTS["quant"],
+        quant_gap_filled=RESULTS["quant_gap_filled"],
         mgf=RESULTS["mgf"],
         gnps_quant=RESULTS["gnps_quant"],
         gnps_metadata=RESULTS["gnps_metadata"],

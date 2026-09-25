@@ -14,7 +14,9 @@ export_results(
     samples=read_samples(snakemake.input.samples),
     features_out=snakemake.output.features,
     quant_out=snakemake.output.quant,
+    gap_filled_out=snakemake.output.quant_gap_filled,
     gnps_dir=Path(snakemake.output.mgf).parent,
     gnps_consensus_out=snakemake.output.gnps_consensus,
     settings=ExportSettings(**snakemake.params.export),
+    gap_filled_files=list(snakemake.input.gap_filled),
 )
