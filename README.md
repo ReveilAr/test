@@ -47,6 +47,23 @@ Results in `my_study/results/`:
 Feature ids are the same everywhere. Features with MS2 are numbered first,
 so `feature_id` = GNPS `row ID` = MGF `SCANS`.
 
+## Update
+
+```bash
+cd <the clone the atlas-ms environment was created from>
+git pull
+python -c "import atlas_ms; print(atlas_ms.__file__)"   # check which clone is used
+```
+
+The package is installed in editable mode, so it always runs the code of
+that clone. Every log file in `<project>/logs/` starts with the version,
+commit and folder of the code that wrote it.
+
+Snakemake re-runs a step when its rule, script, inputs or parameters
+change, but not when only the `atlas_ms` library changes. To redo a step
+and everything after it: `atlas-ms run my_study -- --forcerun <rule>`,
+e.g. `--forcerun plan_gap_filling`.
+
 ## Tests
 
 ```bash

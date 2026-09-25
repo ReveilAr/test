@@ -42,6 +42,13 @@ keeps the decisions and the rules every session must follow.
   Snakemake runs with `--directory <project>`, so rule paths are relative to
   the project folder. `--sdm conda` needs the `conda` command on PATH; the
   tests run without it (mzML input only).
+- **After a change:** Snakemake does not re-run a step when only the
+  `atlas_ms` library changed (rule, script, input and parameter changes
+  do trigger it). When a fix needs a re-run, give the user the
+  `atlas-ms run <project> -- --forcerun <rule>` to use. The user runs the
+  code from their own clone: they must `git pull` it (merging on GitHub is
+  not enough). Every rule log's first line gives the commit and folder of
+  the code (`logs.code_version`).
 
 ## Decisions (from the design Q&A)
 - **Platform:** Linux only for now (Windows maybe later, don't design for it

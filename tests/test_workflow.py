@@ -12,6 +12,7 @@ import pyopenms as oms
 import pytest
 import yaml
 
+import atlas_ms
 from atlas_ms.config import ExportSettings
 from atlas_ms.preprocessing.export import export_gnps
 from atlas_ms.preprocessing.msdata import load_consensus_map
@@ -176,3 +177,9 @@ def test_gnps_export_without_any_ms2(processed_project, tmp_path):
     export_gnps(no_ms2, mzml, samples, tmp_path / "gnps", tmp_path / "gnps.consensusXML", ExportSettings())
     for name in ("ms2_spectra.mgf", "quantification_table.txt", "metadata.tsv", "iimn_supplementary_pairs.csv"):
         assert (tmp_path / "gnps" / name).exists(), name
+
+
+def test_rule_logs_record_the_code_version(processed_project):
+    """Every rule log starts with the version and commit that produced it."""
+    first_line = (processed_project.root / "logs" / "export.log").read_text().splitlines()[0]
+    assert f"ATLAS-MS {atlas_ms.__version__}, commit " in first_line
