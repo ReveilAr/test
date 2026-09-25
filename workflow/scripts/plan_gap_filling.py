@@ -5,7 +5,8 @@ from atlas_ms.preprocessing.gap_filling import plan_gap_filling
 
 log_to_file(snakemake.log[0])
 plan_gap_filling(
-    consensus_file=snakemake.input[0],
+    consensus_file=snakemake.input.consensus,
+    feature_files=list(snakemake.input.features),
     targets_out=snakemake.output.targets,
     members_out=snakemake.output.members,
 )
