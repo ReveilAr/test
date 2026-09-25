@@ -37,7 +37,7 @@ MZML = names_regex([n for n in NAMES if raw_format(SAMPLES.loc[n, "file"]) == "m
 wildcard_constraints:
     sample=names_regex(NAMES),
 
-# Final outputs of the workflow (milestone 1: preprocessing).
+# Final outputs of the workflow.
 RESULTS = {
     "features": "results/features.parquet",
     "quant": "results/quant.parquet",
@@ -46,6 +46,9 @@ RESULTS = {
     "gnps_quant": "results/gnps/quantification_table.txt",
     "gnps_metadata": "results/gnps/metadata.tsv",
     "gnps_pairs": "results/gnps/iimn_supplementary_pairs.csv",
+    "nodes": "results/network/nodes.parquet",
+    "edges": "results/network/edges.parquet",
+    "graphml": "results/network/network.graphml",
 }
 
 
@@ -58,3 +61,4 @@ include: "rules/conversion.smk"
 include: "rules/preprocessing.smk"
 include: "rules/gap_filling.smk"
 include: "rules/export.smk"
+include: "rules/network.smk"

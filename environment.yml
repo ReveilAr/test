@@ -12,6 +12,9 @@ channels:
   - conda-forge
 dependencies:
   - python=3.12
+  # PyTorch (for MS2DeepScore) from conda-forge: conda picks the CUDA build on
+  # machines with an NVIDIA GPU and the much smaller CPU build otherwise.
+  - pytorch
   - pip
   - pip:
       - -e .[dev]

@@ -34,7 +34,10 @@ keeps the decisions and the rules every session must follow.
     `results/quant_gap_filled.parquet` (and `features.n_gap_filled`) for the
     statistics.
   - **Preprocessing is considered validated on real data.**
-- **Next:** milestone 2 (network + first app).
+- **Milestone 2 in progress.** Network backend done: `atlas_ms.network`
+  (spectrum QC → modified cosine / MS2DeepScore candidate pool → GNPS-style
+  network, families, Louvain communities, layout, GraphML). Next: the Panel
+  app (Setup + Network tabs).
 - **Name:** ATLAS-MS is a placeholder (Python package `atlas_ms`, command
   `atlas-ms`). The repo is private and licensing is decided later.
 
@@ -47,7 +50,7 @@ keeps the decisions and the rules every session must follow.
 - **Environment:** `conda env create -f environment.yml` installs the
   package in editable mode. Python dependencies are listed once, in
   `pyproject.toml`.
-- **Tests:** `pytest` (about 15 s). `tests/synthetic.py` generates the
+- **Tests:** `pytest` (about 70 s: matchms and PyTorch imports are slow). `tests/synthetic.py` generates the
   LC-MS runs. Every change to a processing step needs a test with an
   expected value on the synthetic study.
 - **Running:** `atlas-ms init <project> <files>` then `atlas-ms run <project>`.
@@ -186,6 +189,23 @@ keeps the decisions and the rules every session must follow.
   - "SignalToNoiseEstimatorMedian: 100% of all windows were sparse" warnings
     are harmless.
 - **PyYAML** reads `1.0e4` as a string (YAML 1.1). Write `10000.0`.
+
+## Other library notes (milestone 2)
+- **matchms 0.33:** `ModifiedCosine` is now `ModifiedCosineGreedy` (and
+  `ModifiedCosineHungarian`, exact but slower). `.matrix()` returns a
+  structured array with fields `score` and `matches`.
+- **matchms import time:** importing matchms takes about 10 s. Nothing the
+  Snakefile imports may import matchms. `network/model_files.py` exists for
+  this reason, and `blank_ratios` lives in `graph.py`.
+- **MS2DeepScore 2.11:**
+  - It imports `onnxruntime` without declaring it, so it is listed in
+    `pyproject.toml`.
+  - The pretrained model is `ms2deepscore_model.pt` from Zenodo record
+    17826815, loaded with `load_model(path, allow_legacy=True)`.
+  - Tests use a tiny untrained `SiameseSpectralModel(SettingsMS2Deepscore(base_dims=(32,), embedding_dim=8))`.
+- **Modified cosine with one matched fragment** links unrelated spectra by
+  coincidence. Example in the synthetic data: TG vs CE at 0.78, through one
+  shifted fragment. Keep `min_matched_peaks` above 1.
 - **ThermoRawFileParser 1.4.5 (bioconda, runs on Mono):** `--input=`,
   `--output=` (a file) and `--format=2` (indexed mzML). Vendor peak picking
   is on by default.

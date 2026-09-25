@@ -146,6 +146,10 @@ def gnps_metadata(samples: pd.DataFrame, mzml_files: list[str | Path]) -> pd.Dat
     """
     Sample metadata in GNPS format: "filename" plus ATTRIBUTE_* columns.
     GNPS matches it to the quantification table by mzML file name.
+
+    Written by its own rule (``gnps_metadata``): editing the metadata must
+    not re-run the export, which would rewrite the MGF and re-run the
+    spectral scoring downstream.
     """
     metadata = pd.DataFrame({"filename": [Path(f).name for f in mzml_files]})
     metadata["ATTRIBUTE_sample_type"] = samples["sample_type"].to_numpy()
@@ -158,12 +162,11 @@ def gnps_metadata(samples: pd.DataFrame, mzml_files: list[str | Path]) -> pd.Dat
 def export_gnps(
     consensus: oms.ConsensusMap,
     mzml_files: list[str | Path],
-    samples: pd.DataFrame,
     gnps_dir: str | Path,
     consensus_file: str | Path,
     settings: ExportSettings,
 ) -> None:
-    """Write the GNPS FBMN files for the features with MS2."""
+    """Write the GNPS FBMN files for the features with MS2 (except the metadata)."""
     gnps_dir = Path(gnps_dir)
     gnps_dir.mkdir(parents=True, exist_ok=True)
     subset = ms2_subset(consensus)
@@ -184,7 +187,6 @@ def export_gnps(
     if not pairs.exists():
         # OpenMS writes nothing when no adduct pairs were found.
         pairs.write_text("ID1,ID2,EdgeType,Score,Annotation\n")
-    gnps_metadata(samples, mzml_files).to_csv(gnps_dir / "metadata.tsv", sep="\t", index=False)
 
     # The MGF writer skips a feature when its chosen spectrum is empty (see
     # annotate.drop_empty_ms2, which prevents it). Report and check it.
@@ -197,7 +199,7 @@ def export_gnps(
 def export_results(
     consensus_file: str | Path,
     mzml_files: list[str | Path],
-    samples: pd.DataFrame,
+    run_names: list[str],
     features_out: str | Path,
     quant_out: str | Path,
     gap_filled_out: str | Path,
@@ -207,7 +209,7 @@ def export_results(
     gap_filled_files: list[str | Path] | None = None,
 ) -> None:
     """
-    File-level entry point. ``samples`` is the sample table in map-index
+    File-level entry point. ``run_names`` are the sample names in map-index
     order; ``mzml_files`` and ``gap_filled_files`` (the gap-filled feature
     maps, if gap filling ran) list the runs' files in the same order.
     """
@@ -218,7 +220,7 @@ def export_results(
     annotated = oms.ConsensusMap(consensus)
     oms.IonIdentityMolecularNetworking.annotateConsensusMap(annotated)
     gap_filled = gap_filled_features(gap_filled_files or [])
-    features, quant, gap_filled_table = feature_tables(annotated, list(samples.index), gap_filled)
+    features, quant, gap_filled_table = feature_tables(annotated, run_names, gap_filled)
     features.to_parquet(features_out, index=False)
     quant.to_parquet(quant_out, index=False)
     gap_filled_table.to_parquet(gap_filled_out, index=False)
@@ -226,9 +228,9 @@ def export_results(
     n_values = max(values.size, 1)
     log.info(
         "%d features (%d with MS2) x %d samples: %.1f%% missing values, %.1f%% gap-filled",
-        len(features), int(features["has_ms2"].sum()), len(samples),
+        len(features), int(features["has_ms2"].sum()), len(run_names),
         100 * np.isnan(values).sum() / n_values,
         100 * gap_filled_table.drop(columns="feature_id").to_numpy().sum() / n_values,
     )
 
-    export_gnps(consensus, mzml_files, samples, gnps_dir, gnps_consensus_out, settings)
+    export_gnps(consensus, mzml_files, gnps_dir, gnps_consensus_out, settings)

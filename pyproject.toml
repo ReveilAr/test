@@ -17,6 +17,16 @@ dependencies = [
     "pyarrow>=15",
     "numpy>=1.26",
     "pyyaml>=6",
+    # Molecular networking
+    "matchms>=0.33,<0.34",  # 0.33 renamed ModifiedCosine to ModifiedCosineGreedy
+    "ms2deepscore>=2.11,<3",
+    "onnxruntime",  # imported by ms2deepscore 2.11 but not declared by it
+    "networkx>=3.4",
+    # App
+    "panel>=1.5",
+    "holoviews>=1.20",
+    "bokeh>=3.6",
+    "pyopenms-viz>=1.2",
 ]
 
 [project.optional-dependencies]

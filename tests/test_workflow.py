@@ -147,10 +147,24 @@ def test_only_affected_steps_are_rerun(processed_project, tmp_path):
     shutil.copytree(processed_project.root, root, symlinks=True)
     assert planned_jobs(snakemake(root, "--dry-run")) == {}  # nothing to do
 
+    # Metadata edits: only the GNPS metadata and the (cheap) network step.
+    samples = pd.read_csv(root / "samples.tsv", sep="\t")
+    samples["ATTRIBUTE_batch"] = "b1"
+    samples.to_csv(root / "samples.tsv", sep="\t", index=False)
+    assert planned_jobs(snakemake(root, "--dry-run")) == {"gnps_metadata": 1, "build_network": 1, "all": 1}
+
+    # Network cutoffs: only the network construction, never the scoring.
     config = yaml.safe_load((root / "project.yaml").read_text())
+    config["network"]["top_k"] = 5
+    (root / "project.yaml").write_text(yaml.safe_dump(config))
+    assert planned_jobs(snakemake(root, "--dry-run")) == {"gnps_metadata": 1, "build_network": 1, "all": 1}
+
+    # Export parameters: the export and the network built from it.
     config["export"]["min_detection_fraction"] = 0.5
     (root / "project.yaml").write_text(yaml.safe_dump(config))
-    assert planned_jobs(snakemake(root, "--dry-run")) == {"export": 1, "all": 1}
+    assert planned_jobs(snakemake(root, "--dry-run")) == {
+        "export": 1, "gnps_metadata": 1, "spectrum_qc": 1, "score_spectra": 1, "build_network": 1, "all": 1,
+    }
 
     config["linking"]["rt_tol_s"] = 20.0
     (root / "project.yaml").write_text(yaml.safe_dump(config))
@@ -183,8 +197,8 @@ def test_gnps_export_without_any_ms2(processed_project, tmp_path):
         no_ms2.push_back(cf)
     samples = processed_project.load_samples()
     mzml = [root / "work/mzml" / f"{name}.mzML" for name in samples.index]
-    export_gnps(no_ms2, mzml, samples, tmp_path / "gnps", tmp_path / "gnps.consensusXML", ExportSettings())
-    for name in ("ms2_spectra.mgf", "quantification_table.txt", "metadata.tsv", "iimn_supplementary_pairs.csv"):
+    export_gnps(no_ms2, mzml, tmp_path / "gnps", tmp_path / "gnps.consensusXML", ExportSettings())
+    for name in ("ms2_spectra.mgf", "quantification_table.txt", "iimn_supplementary_pairs.csv"):
         assert (tmp_path / "gnps" / name).exists(), name
 
 
