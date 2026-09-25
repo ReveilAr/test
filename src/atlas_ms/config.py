@@ -218,6 +218,97 @@ class ExportSettings(Section):
     )
 
 
+class SpectrumQCSettings(Section):
+    """
+    Quality control of the MS2 spectra before similarity scoring. These
+    filters are independent of the scores: never filter on a score itself.
+    """
+
+    precursor_window_da = param.Number(
+        default=17.0, bounds=(0.0, 100.0),
+        doc="Fragments within this distance (Da) of the precursor m/z are removed: "
+            "the unfragmented precursor and its isotopes (GNPS default 17 Da).",
+    )
+    min_peaks = param.Integer(
+        default=4, bounds=(1, None),
+        doc="Spectra with fewer fragments (after cleaning) get no spectral edges. "
+            "Lipid spectra are sparse (PC: m/z 184 and little else), so keep it low.",
+    )
+    max_blank_ratio = param.Number(
+        default=0.3, bounds=(0.0, None),
+        doc="Features whose mean intensity in blanks exceeds this fraction of their "
+            "mean in samples get no spectral edges. Only applies when samples.tsv "
+            "lists blanks (FBMN-STATS default 0.3).",
+    )
+
+
+class ScoringSettings(Section):
+    """
+    Pairwise spectral similarity. Scoring is the slow step, so it keeps a
+    pool of candidate edges; the network is then built from the pool, and
+    changing the network cutoffs does not re-run the scoring.
+    """
+
+    score = param.Selector(
+        default="modified_cosine", objects=["modified_cosine", "ms2deepscore"],
+        doc="modified_cosine: fragment matching, also across the precursor mass "
+            "difference (GNPS). ms2deepscore: predicted structural similarity "
+            "(pretrained deep-learning model).",
+    )
+    fragment_tolerance_da = param.Number(
+        default=0.01, bounds=(0.0001, 1.0),
+        doc="Modified cosine only: tolerance (Da) when matching fragments.",
+    )
+    ms2deepscore_model = param.String(
+        default="",
+        doc="MS2DeepScore only: path of the model file (.pt). Empty: the pretrained "
+            "model, downloaded once to ~/.cache/atlas-ms/models/.",
+    )
+    candidates_per_spectrum = param.Integer(
+        default=50, bounds=(1, None),
+        doc="Best-scoring neighbours kept per spectrum as candidate edges. "
+            "The network's top_k cannot be larger.",
+    )
+    min_candidate_score = param.Number(
+        default=0.3, bounds=(0.0, 1.0),
+        doc="Pairs scoring lower are never candidates. The network's min_score "
+            "cannot be lower.",
+    )
+
+
+class NetworkSettings(Section):
+    """
+    Molecular network construction from the candidate edges (GNPS algorithm).
+    Values are GNPS placeholders, to be tuned on the first real network.
+    """
+
+    min_score = param.Number(
+        default=0.7, bounds=(0.0, 1.0),
+        doc="Minimum similarity for an edge (placeholder: GNPS modified cosine value; "
+            "MS2DeepScore usually needs a higher one).",
+    )
+    min_matched_peaks = param.Integer(
+        default=6, bounds=(0, None),
+        doc="Modified cosine only: minimum number of matched fragments for an edge. "
+            "Lipid spectra are sparse; this GNPS value may be too strict for them.",
+    )
+    top_k = param.Integer(
+        default=10, bounds=(1, None),
+        doc="An edge is kept only if each node is among the other's top_k most "
+            "similar neighbours.",
+    )
+    max_family_size = param.Integer(
+        default=100, bounds=(0, None),
+        doc="Families (connected components) larger than this lose their weakest "
+            "edges until they split. 0: no limit.",
+    )
+    louvain_resolution = param.Number(
+        default=1.0, bounds=(0.01, 10.0),
+        doc="Louvain community detection inside families: higher values give "
+            "smaller communities.",
+    )
+
+
 # --------------------------------------------------------------------------
 # All sections of a project
 # --------------------------------------------------------------------------
@@ -232,6 +323,9 @@ SECTIONS: dict[str, type[Section]] = {
     "linking": LinkingSettings,
     "gap_filling": GapFillingSettings,
     "export": ExportSettings,
+    "spectrum_qc": SpectrumQCSettings,
+    "scoring": ScoringSettings,
+    "network": NetworkSettings,
 }
 
 
@@ -249,6 +343,9 @@ class ProjectConfig:
     linking: LinkingSettings
     gap_filling: GapFillingSettings
     export: ExportSettings
+    spectrum_qc: SpectrumQCSettings
+    scoring: ScoringSettings
+    network: NetworkSettings
 
     def __init__(self, **sections: Section):
         unknown = set(sections) - set(SECTIONS)
@@ -256,6 +353,20 @@ class ProjectConfig:
             raise ValueError(f"Unknown section(s): {sorted(unknown)}")
         for key, section_class in SECTIONS.items():
             setattr(self, key, sections.get(key) or section_class())
+
+    def check(self) -> None:
+        """Rules that involve several sections (single values are checked by param)."""
+        if self.network.min_score < self.scoring.min_candidate_score:
+            raise ValueError(
+                f"network.min_score ({self.network.min_score}) is below "
+                f"scoring.min_candidate_score ({self.scoring.min_candidate_score}): "
+                "lower the candidate score, or raise the network one"
+            )
+        if self.network.top_k > self.scoring.candidates_per_spectrum:
+            raise ValueError(
+                f"network.top_k ({self.network.top_k}) is larger than "
+                f"scoring.candidates_per_spectrum ({self.scoring.candidates_per_spectrum})"
+            )
 
     # ---- dict / YAML round trip ----
 
@@ -268,13 +379,16 @@ class ProjectConfig:
         unknown = set(data) - set(SECTIONS)
         if unknown:
             raise ValueError(f"Unknown section(s) in project configuration: {sorted(unknown)}")
-        return cls(**{key: SECTIONS[key].from_dict(data.get(key)) for key in SECTIONS})
+        config = cls(**{key: SECTIONS[key].from_dict(data.get(key)) for key in SECTIONS})
+        config.check()
+        return config
 
     @classmethod
     def load(cls, path: str | Path) -> "ProjectConfig":
         return cls.from_dict(yaml.safe_load(Path(path).read_text()))
 
     def save(self, path: str | Path) -> None:
+        self.check()
         header = "# ATLAS-MS project parameters (edit here or in the app).\n"
         Path(path).write_text(header + yaml.safe_dump(self.to_dict(), sort_keys=False))
 

@@ -12,6 +12,7 @@ import pyopenms as oms
 import pytest
 import yaml
 
+import atlas_ms
 from atlas_ms.config import ExportSettings
 from atlas_ms.preprocessing.export import export_gnps
 from atlas_ms.preprocessing.msdata import load_consensus_map
@@ -85,6 +86,15 @@ def test_gap_filling_recovers_the_weak_compound(results):
     assert 150 < ratio < 600
 
 
+def test_gap_filled_values_are_flagged(processed_project, results):
+    flags = pd.read_parquet(processed_project.results_dir / "quant_gap_filled.parquet").set_index("feature_id")
+    cer = feature_of(results["features"], "Cer 34:1;O2 [M+H]+")
+    # Only one value in the whole table was re-extracted: Cer in treat_2.
+    assert flags.to_numpy().sum() == 1
+    assert flags.loc[cer["feature_id"], "treat_2"]
+    assert cer["n_gap_filled"] == 1
+
+
 def test_quantification_follows_the_simulated_change(results):
     tg = feature_of(results["features"], "TG 52:2 [M+NH4]+")
     values = results["quant"].loc[tg["feature_id"]]
@@ -137,10 +147,24 @@ def test_only_affected_steps_are_rerun(processed_project, tmp_path):
     shutil.copytree(processed_project.root, root, symlinks=True)
     assert planned_jobs(snakemake(root, "--dry-run")) == {}  # nothing to do
 
+    # Metadata edits: only the GNPS metadata and the (cheap) network step.
+    samples = pd.read_csv(root / "samples.tsv", sep="\t")
+    samples["ATTRIBUTE_batch"] = "b1"
+    samples.to_csv(root / "samples.tsv", sep="\t", index=False)
+    assert planned_jobs(snakemake(root, "--dry-run")) == {"gnps_metadata": 1, "build_network": 1, "all": 1}
+
+    # Network cutoffs: only the network construction, never the scoring.
     config = yaml.safe_load((root / "project.yaml").read_text())
+    config["network"]["top_k"] = 5
+    (root / "project.yaml").write_text(yaml.safe_dump(config))
+    assert planned_jobs(snakemake(root, "--dry-run")) == {"gnps_metadata": 1, "build_network": 1, "all": 1}
+
+    # Export parameters: the export and the network built from it.
     config["export"]["min_detection_fraction"] = 0.5
     (root / "project.yaml").write_text(yaml.safe_dump(config))
-    assert planned_jobs(snakemake(root, "--dry-run")) == {"export": 1, "all": 1}
+    assert planned_jobs(snakemake(root, "--dry-run")) == {
+        "export": 1, "gnps_metadata": 1, "spectrum_qc": 1, "score_spectra": 1, "build_network": 1, "all": 1,
+    }
 
     config["linking"]["rt_tol_s"] = 20.0
     (root / "project.yaml").write_text(yaml.safe_dump(config))
@@ -173,6 +197,12 @@ def test_gnps_export_without_any_ms2(processed_project, tmp_path):
         no_ms2.push_back(cf)
     samples = processed_project.load_samples()
     mzml = [root / "work/mzml" / f"{name}.mzML" for name in samples.index]
-    export_gnps(no_ms2, mzml, samples, tmp_path / "gnps", tmp_path / "gnps.consensusXML", ExportSettings())
-    for name in ("ms2_spectra.mgf", "quantification_table.txt", "metadata.tsv", "iimn_supplementary_pairs.csv"):
+    export_gnps(no_ms2, mzml, tmp_path / "gnps", tmp_path / "gnps.consensusXML", ExportSettings())
+    for name in ("ms2_spectra.mgf", "quantification_table.txt", "iimn_supplementary_pairs.csv"):
         assert (tmp_path / "gnps" / name).exists(), name
+
+
+def test_rule_logs_record_the_code_version(processed_project):
+    """Every rule log starts with the version and commit that produced it."""
+    first_line = (processed_project.root / "logs" / "export.log").read_text().splitlines()[0]
+    assert f"ATLAS-MS {atlas_ms.__version__}, commit " in first_line

@@ -21,6 +21,8 @@ orbitrap:
     mz_tol_ppm: 8.0
   gap_filling:
     mz_window_ppm: 10.0
+  scoring:
+    fragment_tolerance_da: 0.01
 
 qtof:
   description: Q-TOF (Bruker, Agilent, Sciex, Waters) with UHPLC
@@ -35,3 +37,5 @@ qtof:
     mz_tol_ppm: 15.0
   gap_filling:
     mz_window_ppm: 20.0
+  scoring:
+    fragment_tolerance_da: 0.02

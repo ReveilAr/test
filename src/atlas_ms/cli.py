@@ -3,6 +3,7 @@ Command line interface.
 
     atlas-ms init <project> <raw files...> [--instrument orbitrap] [--adducts positive_lipids]
     atlas-ms run  <project> [--cores 4] [--dry-run] [-- extra snakemake options]
+    atlas-ms app  [project] [--port 5006] [--no-browser]
 """
 
 import argparse
@@ -30,7 +31,17 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("snakemake_args", nargs=argparse.REMAINDER,
                      help="extra Snakemake options, after '--'")
 
+    app = commands.add_parser("app", help="open the app in the browser")
+    app.add_argument("project", nargs="?", help="project folder to open")
+    app.add_argument("--port", type=int, default=5006)
+    app.add_argument("--no-browser", action="store_true", help="do not open a browser tab")
+
     args = parser.parse_args(argv)
+    if args.command == "app":
+        from atlas_ms.app.main import serve  # imported here: loading Panel takes a moment
+
+        serve(args.project, port=args.port, show=not args.no_browser)
+        return 0
     if args.command == "init":
         project = Project.create(args.project, args.files, instrument=args.instrument, adducts=args.adducts)
         print(f"Created {project.root}\n"

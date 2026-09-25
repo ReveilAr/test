@@ -21,8 +21,28 @@ keeps the decisions and the rules every session must follow.
     written, 13% missing values.
   - Run 2 also showed that gap filling mixed two intensity scales, and the
     OpenMS peptide isotope model used for targets. Gap filling was reworked
-    (see Preprocessing); run 3 is to be checked.
-- **Next:** milestone 2 (network + first app).
+    (see Preprocessing).
+  - Run 3, with the reworked gap filling: about 930–1,110 detected /
+    re-extracted pairs per run and 1,237–1,346 gaps filled per run. Scale
+    factors (detected / re-extracted) were 1.43, 1.24, 1.10 and 1.21: the
+    symmetric model under-integrates tailing peaks.
+  - Intensity check (weakest vs. strongest quarter of pairs): 1.12 vs 1.14,
+    1.19 vs 1.20, 1.20 vs 1.29, 1.29 vs 1.56. There is no real intensity
+    dependence except in legio_19 (gaps scaled about 10% high there), so one
+    factor per run is kept. The per-feature ratio IQR is wide (about 0.85–2.0):
+    single gap-filled values are approximate. They are therefore flagged in
+    `results/quant_gap_filled.parquet` (and `features.n_gap_filled`) for the
+    statistics.
+  - **Preprocessing is considered validated on real data.**
+- **Milestone 2 done** (awaiting the user's first real network).
+  - `atlas_ms.network`: spectrum QC → modified cosine or MS2DeepScore
+    candidate pool → GNPS-style network, families, Louvain communities,
+    layout, GraphML.
+  - `atlas_ms.app` (`atlas-ms app`): sidebar open / create / run; Setup tab
+    (samples, presets, adducts, parameters); Network tab (network ↔ table
+    selection, MS2 spectrum, chromatograms from the mzML).
+  - Next: tuning on the real network (milestone 5), then milestone 3
+    (annotation).
 - **Name:** ATLAS-MS is a placeholder (Python package `atlas_ms`, command
   `atlas-ms`). The repo is private and licensing is decided later.
 
@@ -35,13 +55,20 @@ keeps the decisions and the rules every session must follow.
 - **Environment:** `conda env create -f environment.yml` installs the
   package in editable mode. Python dependencies are listed once, in
   `pyproject.toml`.
-- **Tests:** `pytest` (about 15 s). `tests/synthetic.py` generates the
+- **Tests:** `pytest` (about 1.5 min: matchms and PyTorch imports are slow). `tests/synthetic.py` generates the
   LC-MS runs. Every change to a processing step needs a test with an
   expected value on the synthetic study.
 - **Running:** `atlas-ms init <project> <files>` then `atlas-ms run <project>`.
   Snakemake runs with `--directory <project>`, so rule paths are relative to
   the project folder. `--sdm conda` needs the `conda` command on PATH; the
   tests run without it (mzML input only).
+- **After a change:** Snakemake does not re-run a step when only the
+  `atlas_ms` library changed (rule, script, input and parameter changes
+  do trigger it). When a fix needs a re-run, give the user the
+  `atlas-ms run <project> -- --forcerun <rule>` to use. The user runs the
+  code from their own clone: they must `git pull` it (merging on GitHub is
+  not enough). Every rule log's first line gives the commit and folder of
+  the code (`logs.code_version`).
 
 ## Decisions (from the design Q&A)
 - **Platform:** Linux only for now (Windows maybe later, don't design for it
@@ -167,6 +194,33 @@ keeps the decisions and the rules every session must follow.
   - "SignalToNoiseEstimatorMedian: 100% of all windows were sparse" warnings
     are harmless.
 - **PyYAML** reads `1.0e4` as a string (YAML 1.1). Write `10000.0`.
+
+## Other library notes (milestone 2)
+- **matchms 0.33:** `ModifiedCosine` is now `ModifiedCosineGreedy` (and
+  `ModifiedCosineHungarian`, exact but slower). `.matrix()` returns a
+  structured array with fields `score` and `matches`.
+- **matchms import time:** importing matchms takes about 10 s. Nothing the
+  Snakefile imports may import matchms. `network/model_files.py` exists for
+  this reason, and `blank_ratios` lives in `graph.py`.
+- **MS2DeepScore 2.11:**
+  - It imports `onnxruntime` without declaring it, so it is listed in
+    `pyproject.toml`.
+  - The pretrained model is `ms2deepscore_model.pt` from Zenodo record
+    17826815, loaded with `load_model(path, allow_legacy=True)`.
+  - Tests use a tiny untrained `SiameseSpectralModel(SettingsMS2Deepscore(base_dims=(32,), embedding_dim=8))`.
+- **Panel 1.9:** widgets take `label=` (not `name=`) and buttons take `color=`
+  (not `button_type=`); the old names give deprecation warnings.
+- **pyopenms-viz 1.2:** `df.plot(kind="spectrum" | "chromatogram",
+  backend="ms_bokeh", show_plot=False)` returns a Bokeh figure. Its
+  `__version__` string still says 1.0.1.
+- **Checking the app:** serve it (`atlas-ms app <project> --no-browser
+  --port N`) and screenshot it with Playwright. Use the preinstalled
+  Chromium (`executable_path="/opt/pw-browsers/chromium"`): the pip
+  Playwright wants a newer build. Never `pkill -f "atlas-ms app"`: the
+  pattern matches the shell running it.
+- **Modified cosine with one matched fragment** links unrelated spectra by
+  coincidence. Example in the synthetic data: TG vs CE at 0.78, through one
+  shifted fragment. Keep `min_matched_peaks` above 1.
 - **ThermoRawFileParser 1.4.5 (bioconda, runs on Mono):** `--input=`,
   `--output=` (a file) and `--format=2` (indexed mzML). Vendor peak picking
   is on by default.

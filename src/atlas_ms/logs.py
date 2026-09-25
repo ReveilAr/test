@@ -2,10 +2,35 @@
 
 import logging
 import os
+import subprocess
 import sys
+from pathlib import Path
+
+import atlas_ms
 
 # Keeps the log file open for the lifetime of the process (see log_to_file).
 _log_file = None
+
+
+def code_version() -> str:
+    """
+    Which code is running: package version, git commit (with "-dirty" if
+    there are uncommitted changes) and the folder it is loaded from.
+
+    Every rule log starts with this line, so a log always tells which version
+    produced a result. The package is installed in editable mode, so it runs
+    from whichever clone the conda environment was created from; that clone
+    must be updated (`git pull`) to run new code.
+    """
+    folder = Path(atlas_ms.__file__).resolve().parent
+    try:
+        commit = subprocess.run(
+            ["git", "describe", "--always", "--dirty"],
+            cwd=folder, capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        commit = ""
+    return f"ATLAS-MS {atlas_ms.__version__}, commit {commit or 'unknown'}, from {folder}"
 
 
 def log_to_file(path: str) -> logging.Logger:
@@ -32,4 +57,6 @@ def log_to_file(path: str) -> logging.Logger:
         stream=sys.stderr,
         force=True,
     )
-    return logging.getLogger("atlas_ms")
+    logger = logging.getLogger("atlas_ms")
+    logger.info(code_version())
+    return logger

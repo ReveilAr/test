@@ -5,6 +5,8 @@ Outputs:
 
 * ``results/features.parquet``: one row per feature (m/z, RT, MS2, adducts...)
 * ``results/quant.parquet``: feature intensities, one column per sample
+* ``results/quant_gap_filled.parquet``: same shape, True where the value was
+  re-extracted by gap filling rather than detected
 * ``results/gnps/``: the four files of GNPS Feature-Based Molecular
   Networking with the "OpenMS" input format (MS2 spectra as MGF,
   quantification table, sample metadata, IIMN adduct pairs). They are what
@@ -29,7 +31,12 @@ import pandas as pd
 import pyopenms as oms
 
 from atlas_ms.config import ExportSettings
-from atlas_ms.preprocessing.msdata import load_consensus_map, set_parameters, store_consensus_map
+from atlas_ms.preprocessing.msdata import (
+    load_consensus_map,
+    load_feature_map,
+    set_parameters,
+    store_consensus_map,
+)
 
 log = logging.getLogger(__name__)
 
@@ -69,17 +76,38 @@ def ms2_subset(consensus: oms.ConsensusMap) -> oms.ConsensusMap:
     return subset
 
 
-def feature_tables(consensus: oms.ConsensusMap, run_names: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+def gap_filled_features(feature_files: list[str | Path]) -> set[tuple[int, str]]:
     """
-    Build the features and quantification tables from an ordered consensus
-    map annotated with ``IonIdentityMolecularNetworking.annotateConsensusMap``.
+    (map index, feature id) of the features added by gap filling, read from
+    the gap-filled feature maps (in map-index order). Consensus features only
+    keep references to their features, not the features' meta values.
+    """
+    filled = set()
+    for map_index, path in enumerate(feature_files):
+        for feature in load_feature_map(path):
+            if feature.metaValueExists("gap_filled"):
+                filled.add((map_index, str(feature.getUniqueId())))
+    return filled
+
+
+def feature_tables(
+    consensus: oms.ConsensusMap,
+    run_names: list[str],
+    gap_filled: set[tuple[int, str]] = frozenset(),
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Build the features, quantification and gap-filled-flag tables from an
+    ordered consensus map annotated with
+    ``IonIdentityMolecularNetworking.annotateConsensusMap``.
     """
     n_features = consensus.size()
     intensities = np.full((n_features, len(run_names)), np.nan)
+    filled = np.zeros((n_features, len(run_names)), dtype=bool)
     rows = []
     for row, cf in enumerate(consensus):
         for handle in cf.getFeatureList():
             intensities[row, handle.getMapIndex()] = handle.getIntensity()
+            filled[row, handle.getMapIndex()] = (handle.getMapIndex(), str(handle.getUniqueId())) in gap_filled
         # Ion identity (IIMN): features that are adducts of the same molecule
         # list each other as "partners" (by row id) and share an "annotation
         # network number". The adduct itself ("best ion") is only evidence
@@ -95,7 +123,7 @@ def feature_tables(consensus: oms.ConsensusMap, run_names: list[str]) -> tuple[p
             "charge": cf.getCharge(),
             "intensity": cf.getIntensity(),
             "quality": cf.getQuality(),
-            "n_detected": cf.size(),
+            "n_detected": cf.size(),  # runs with a value, detected or gap-filled
             "n_ms2": cf.getPeptideIdentifications().size(),
             "ion": meta_value(cf, "best ion") if has_partner else None,
             "ion_partners": partners.replace(",", ";") if has_partner else None,
@@ -106,15 +134,22 @@ def feature_tables(consensus: oms.ConsensusMap, run_names: list[str]) -> tuple[p
         features = pd.DataFrame(columns=["feature_id", "mz", "rt", "charge", "intensity", "quality",
                                          "n_detected", "n_ms2", "ion", "ion_partners", "ion_network"])
     features["has_ms2"] = features["n_ms2"] > 0
+    features["n_gap_filled"] = filled.sum(axis=1)
     quant = pd.DataFrame(intensities, columns=run_names)
     quant.insert(0, "feature_id", np.arange(1, n_features + 1))
-    return features, quant
+    gap_filled_table = pd.DataFrame(filled, columns=run_names)
+    gap_filled_table.insert(0, "feature_id", np.arange(1, n_features + 1))
+    return features, quant, gap_filled_table
 
 
 def gnps_metadata(samples: pd.DataFrame, mzml_files: list[str | Path]) -> pd.DataFrame:
     """
     Sample metadata in GNPS format: "filename" plus ATTRIBUTE_* columns.
     GNPS matches it to the quantification table by mzML file name.
+
+    Written by its own rule (``gnps_metadata``): editing the metadata must
+    not re-run the export, which would rewrite the MGF and re-run the
+    spectral scoring downstream.
     """
     metadata = pd.DataFrame({"filename": [Path(f).name for f in mzml_files]})
     metadata["ATTRIBUTE_sample_type"] = samples["sample_type"].to_numpy()
@@ -127,12 +162,11 @@ def gnps_metadata(samples: pd.DataFrame, mzml_files: list[str | Path]) -> pd.Dat
 def export_gnps(
     consensus: oms.ConsensusMap,
     mzml_files: list[str | Path],
-    samples: pd.DataFrame,
     gnps_dir: str | Path,
     consensus_file: str | Path,
     settings: ExportSettings,
 ) -> None:
-    """Write the GNPS FBMN files for the features with MS2."""
+    """Write the GNPS FBMN files for the features with MS2 (except the metadata)."""
     gnps_dir = Path(gnps_dir)
     gnps_dir.mkdir(parents=True, exist_ok=True)
     subset = ms2_subset(consensus)
@@ -153,7 +187,6 @@ def export_gnps(
     if not pairs.exists():
         # OpenMS writes nothing when no adduct pairs were found.
         pairs.write_text("ID1,ID2,EdgeType,Score,Annotation\n")
-    gnps_metadata(samples, mzml_files).to_csv(gnps_dir / "metadata.tsv", sep="\t", index=False)
 
     # The MGF writer skips a feature when its chosen spectrum is empty (see
     # annotate.drop_empty_ms2, which prevents it). Report and check it.
@@ -166,16 +199,19 @@ def export_gnps(
 def export_results(
     consensus_file: str | Path,
     mzml_files: list[str | Path],
-    samples: pd.DataFrame,
+    run_names: list[str],
     features_out: str | Path,
     quant_out: str | Path,
+    gap_filled_out: str | Path,
     gnps_dir: str | Path,
     gnps_consensus_out: str | Path,
     settings: ExportSettings,
+    gap_filled_files: list[str | Path] | None = None,
 ) -> None:
     """
-    File-level entry point. ``samples`` is the sample table in map-index
-    order, and ``mzml_files`` lists the runs' mzML files in the same order.
+    File-level entry point. ``run_names`` are the sample names in map-index
+    order; ``mzml_files`` and ``gap_filled_files`` (the gap-filled feature
+    maps, if gap filling ran) list the runs' files in the same order.
     """
     consensus = order_features(load_consensus_map(consensus_file), settings.min_detection_fraction)
 
@@ -183,13 +219,18 @@ def export_results(
     # them, and row ids are the final feature ids.
     annotated = oms.ConsensusMap(consensus)
     oms.IonIdentityMolecularNetworking.annotateConsensusMap(annotated)
-    features, quant = feature_tables(annotated, list(samples.index))
+    gap_filled = gap_filled_features(gap_filled_files or [])
+    features, quant, gap_filled_table = feature_tables(annotated, run_names, gap_filled)
     features.to_parquet(features_out, index=False)
     quant.to_parquet(quant_out, index=False)
-    missing = quant.drop(columns="feature_id").isna().to_numpy().mean() if len(quant) else 0.0
+    gap_filled_table.to_parquet(gap_filled_out, index=False)
+    values = quant.drop(columns="feature_id").to_numpy()
+    n_values = max(values.size, 1)
     log.info(
-        "%d features (%d with MS2) x %d samples, %.1f%% missing values",
-        len(features), int(features["has_ms2"].sum()), len(samples), 100 * missing,
+        "%d features (%d with MS2) x %d samples: %.1f%% missing values, %.1f%% gap-filled",
+        len(features), int(features["has_ms2"].sum()), len(run_names),
+        100 * np.isnan(values).sum() / n_values,
+        100 * gap_filled_table.drop(columns="feature_id").to_numpy().sum() / n_values,
     )
 
-    export_gnps(consensus, mzml_files, samples, gnps_dir, gnps_consensus_out, settings)
+    export_gnps(consensus, mzml_files, gnps_dir, gnps_consensus_out, settings)

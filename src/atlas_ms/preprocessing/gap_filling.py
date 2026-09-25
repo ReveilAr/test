@@ -205,10 +205,21 @@ def intensity_scale(originals: dict[str, float], extracted: dict[str, float]) ->
     re-extraction picked another peak. ``originals`` and ``extracted`` map
     target -> intensity. Returns (factor, number of pairs).
     """
-    common = sorted(set(originals) & set(extracted))
-    ratios = [originals[t] / extracted[t] for t in common if extracted[t] > 0]
-    if len(ratios) < MIN_PAIRS_FOR_SCALE:
-        return 1.0, len(ratios)
+    common = [t for t in sorted(set(originals) & set(extracted)) if extracted[t] > 0]
+    if len(common) < MIN_PAIRS_FOR_SCALE:
+        return 1.0, len(common)
+    detected = np.array([originals[t] for t in common])
+    ratios = detected / np.array([extracted[t] for t in common])
+
+    # Diagnostic: the gaps are mostly weak features, so the factor is only
+    # right for them if the ratio does not depend on intensity. Compare the
+    # median ratio of the weakest and strongest quarters of the pairs.
+    q1, q3 = np.percentile(detected, [25, 75])
+    log.info(
+        "Scale from %d pairs: median %.3f (IQR %.3f-%.3f); weakest quarter %.3f, strongest quarter %.3f",
+        len(ratios), np.median(ratios), *np.percentile(ratios, [25, 75]),
+        np.median(ratios[detected <= q1]), np.median(ratios[detected >= q3]),
+    )
     return float(np.median(ratios)), len(ratios)
 
 
@@ -247,6 +258,9 @@ def merge_gap_filled(
     for feature in extracted:
         if feature.getMetaValue("label") not in originals:
             feature.setIntensity(feature.getIntensity() * scale)
+            # Mark it: the export flags gap-filled values (they are less
+            # precise than detected ones, see intensity_scale).
+            feature.setMetaValue("gap_filled", "true")
             merged.push_back(feature)
             n_filled += 1
     merged.setUniqueIds()
