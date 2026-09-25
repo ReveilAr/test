@@ -1,8 +1,11 @@
-# Architecture — v1 (draft for review)
+# ATLAS-MS architecture: v1
 
 This document describes how the pipeline is built. The decisions behind it are
-recorded in [`CLAUDE.md`](../CLAUDE.md). `fbmnflow` is a working name for the
-Python package; renaming it is a search-and-replace.
+recorded in [`CLAUDE.md`](../CLAUDE.md). ATLAS-MS is a placeholder name
+(Python package `atlas_ms`, command `atlas-ms`).
+
+Milestone 1 (preprocessing, §6 stages 1–5) is implemented. The other sections
+describe the plan.
 
 ## 1. Scope
 
@@ -10,7 +13,7 @@ Python package; renaming it is a search-and-replace.
 10–100 raw files per project, positive ion mode (polarity stays a parameter),
 lipid-focused but usable for general metabolomics, one project open at a time.
 
-**v1 stages:** raw conversion → preprocessing and alignment (pyOpenMS port of
+**v1 stages:** raw conversion (Thermo only) → preprocessing and alignment (pyOpenMS port of
 UmetaFlow) → gap filling → GNPS/FBMN export → spectrum QC → network (modified
 cosine *or* MS2DeepScore, chosen in the app) → molecular families →
 annotation (library search, MS2Query, SIRIUS 6 REST API, lipid module) →
@@ -28,7 +31,7 @@ LOTUS/NPAtlas, COCONUT, GNPS2).
 
 ```mermaid
 flowchart LR
-    subgraph app["Panel app (fbmnflow.app)"]
+    subgraph app["Panel app (atlas_ms.app)"]
         setup["Setup: files, metadata, parameters"]
         view["Network / Annotation / Stats tabs"]
     end
@@ -55,7 +58,7 @@ flowchart LR
 
 There are three layers, and they only talk to each other through the project folder:
 
-1. **`fbmnflow` Python package.** Holds all the logic and can be tested without Snakemake.
+1. **`atlas_ms` Python package.** Holds all the logic and can be tested without Snakemake.
 2. **Snakemake workflow.** Handles orchestration. Each rule is a thin script
    that calls the package. Tools with conflicting dependencies run in their
    own conda env.
@@ -67,34 +70,33 @@ There are three layers, and they only talk to each other through the project fol
 
 ```
 .
-├── CLAUDE.md                  # decisions and conventions
+├── CLAUDE.md                  # decisions, rules, pyOpenMS quirks
+├── README.md                  # install and usage
 ├── docs/ARCHITECTURE.md       # this file
-├── environment.yml            # core env (runs Snakemake and the app)
-├── pyproject.toml             # the fbmnflow package
-├── config/
-│   ├── presets/instruments/   # orbitrap.yaml, qtof.yaml
-│   ├── adducts/               # positive_lipids.yaml, positive_metabolites.yaml
-│   └── lipid_rules/           # diagnostic ions / neutral losses per class x adduct
+├── environment.yml            # core conda env (python + pip install -e .)
+├── pyproject.toml             # the atlas_ms package and its Python dependencies
 ├── workflow/
-│   ├── Snakefile
-│   ├── rules/                 # one .smk per stage
-│   ├── envs/                  # ms2query.yaml, ms2lda.yaml, conversion.yaml, sirius.yaml
-│   └── scripts/               # thin entry points -> fbmnflow functions
-├── src/fbmnflow/
-│   ├── config.py              # param classes = single source of truth for parameters
-│   ├── project.py             # project folder model
-│   ├── contracts.py           # table schemas (pure pandas/pyarrow, importable from every env)
-│   ├── io/                    # MSP/MGF/JSON library loaders, GNPS export readers
-│   ├── preprocessing/         # pyOpenMS wrappers
-│   ├── network/               # QC, scoring, construction, families, layout, export
-│   ├── annotation/            # plugin base, annotators, lipids/, harmonize.py
-│   ├── stats/                 # FBMN-STATS port
-│   └── app/                   # Panel app: state.py, tabs/, widgets/
-└── tests/                     # pytest, tiny synthetic data
+│   ├── Snakefile              # loads/validates project.yaml + samples.tsv, includes the rules
+│   ├── rules/                 # conversion, preprocessing, gap_filling, export (.smk)
+│   ├── envs/                  # conversion.yaml (+ ms2query, ms2lda, sirius later)
+│   └── scripts/               # thin entry points -> atlas_ms functions
+├── src/atlas_ms/
+│   ├── config.py              # param sections = single source of truth for parameters
+│   ├── presets/               # instruments.yaml, adducts.yaml (+ lipid rules later)
+│   ├── project.py             # project folder + sample table
+│   ├── runner.py, cli.py      # `atlas-ms init/run`
+│   ├── logs.py                # rule log files (captures OpenMS C++ output too)
+│   ├── preprocessing/         # msdata, features, alignment, annotate, linking, gap_filling, export
+│   ├── contracts.py           # (M2+) table schemas, importable from every env
+│   ├── network/               # (M2) QC, scoring, construction, families, layout, export
+│   ├── annotation/            # (M3) plugin base, annotators, lipids/, harmonize.py
+│   ├── stats/                 # (M4) FBMN-STATS port
+│   └── app/                   # (M2+) Panel app: state.py, tabs/, widgets/
+└── tests/                     # pytest; synthetic.py generates LC-MS runs
 ```
 
 Rules running in an isolated env (MS2Query, MS2LDA) import only
-`fbmnflow.contracts`, which depends on nothing but pandas and pyarrow. The
+`atlas_ms.contracts`, which depends on nothing but pandas and pyarrow. The
 Snakefile puts `src/` on `PYTHONPATH` for those rules.
 
 ## 4. Project folder
@@ -102,39 +104,53 @@ Snakefile puts `src/` on `PYTHONPATH` for those rules.
 ```
 my_project/
 ├── project.yaml          # every parameter (written by the app, read by Snakemake)
-├── samples.tsv           # metadata edited in the app: filename, path, sample_type, ATTRIBUTE_*
-├── work/                 # intermediates (mzML, featureXML, consensusXML, embeddings)
+├── samples.tsv           # sample, file (absolute path), sample_type, ATTRIBUTE_*
+├── work/
+│   ├── mzml/             # <s>.mzML: converted (Thermo) or a link to the input mzML
+│   ├── features/         # <s>.featureXML + <s>.precursors.tsv (corrected precursor m/z)
+│   ├── alignment/        # <s>.trafoXML (RT transformation)
+│   ├── annotated/        # <s>.featureXML after adduct grouping + MS2 mapping
+│   ├── gap_filling/      # targets.tsv, complete.tsv, <s>.featureXML
+│   ├── consensus/        # linked.consensusXML, gap_filled.consensusXML
+│   └── export/           # gnps.consensusXML (input of the MGF writer)
 ├── results/
-│   ├── gnps/             # quant.csv, spectra.mgf, metadata.tsv, iimn_pairs.csv (GNPS FBMN schema)
-│   ├── features.parquet  quant.parquet  spectra_qc.parquet
-│   ├── network/          # edges.parquet, nodes.parquet (incl. layout x/y), network.graphml
-│   ├── annotations/      # <source>.parquet per annotator, candidates.parquet, best.parquet
-│   ├── ms2lda/           # motifs.parquet, feature_motifs.parquet
-│   └── stats/            # cleaned_quant.parquet, blank_flags.parquet
-└── logs/                 # per-rule logs + progress/<rule>.json for long rules
+│   ├── features.parquet  quant.parquet
+│   ├── gnps/             # ms2_spectra.mgf, quantification_table.txt, metadata.tsv,
+│   │                     # iimn_supplementary_pairs.csv (GNPS FBMN, "OpenMS" format)
+│   ├── network/          # (M2) edges.parquet, nodes.parquet (incl. layout x/y), network.graphml
+│   ├── annotations/      # (M3) <source>.parquet per annotator, candidates.parquet, best.parquet
+│   ├── ms2lda/           # (M4) motifs.parquet, feature_motifs.parquet
+│   └── stats/            # (M4) cleaned_quant.parquet, blank_flags.parquet
+└── logs/                 # one log per rule and sample (incl. OpenMS output)
 ```
 
-- Snakemake runs as `snakemake --snakefile <repo>/workflow/Snakefile --directory my_project --configfile my_project/project.yaml --sdm conda --cores N`.
+No modified copy of an mzML file is ever written. Precursor corrections and
+RT transformations are small side files, re-applied in memory whenever a
+step needs the spectra (`atlas_ms.preprocessing.msdata.load_run`).
+
+- `atlas-ms run my_project` calls `snakemake --snakefile <repo>/workflow/Snakefile --directory my_project --configfile my_project/project.yaml --sdm conda --conda-prefix ~/.cache/atlas-ms/conda --cores N`. Rule environments are shared by all projects.
 - Raw files are referenced by absolute path, not copied.
 - `sample_type` takes the values `sample`, `blank` and `standard`. It is the only metadata the pipeline itself needs (for blank flagging). Every `ATTRIBUTE_*` column is only used by the stats and colouring.
 
 ## 5. Configuration
 
-- **Single source of truth:** `fbmnflow.config` defines one
+- **Single source of truth:** `atlas_ms.config` defines one
   `param.Parameterized` class per stage. The app renders them with
   `pn.Param`, and they serialize to and from `project.yaml`. The Snakefile
   loads and validates the YAML by instantiating the same classes, so the
   parameters are never defined twice.
-- **Instrument presets** (`orbitrap`, `qtof`, `custom`) fill in:
-  - MS1 mass error (ppm)
-  - MS2 fragment tolerance (Da)
-  - noise threshold
-  - chromatographic FWHM
-  - minimum trace length
-  - SIRIUS instrument profile
+- **Sections (milestone 1):** `presets` (names only, never read by
+  processing), `instrument`, `adducts`, `feature_finding`, `alignment`,
+  `linking`, `gap_filling`, `export`. Later milestones add their own
+  sections.
+- **Instrument presets** (`atlas_ms/presets/instruments.yaml`: `orbitrap`,
+  `qtof`) set values in several sections at once:
+  - MS1 mass error, noise threshold, peak width, minimum trace length;
+  - the alignment, linking and gap-filling m/z tolerances;
+  - later, the MS2 fragment tolerance and the SIRIUS profile.
 
-  Orbitrap starting values come from UmetaFlow. Any preset value can be
-  overridden.
+  Orbitrap values are UmetaFlow's. Every value can be edited after a preset
+  is applied. A new preset is just a YAML entry.
 - **Polarity** drives the default adduct list, the SIRIUS adducts and which
   lipid rule set applies. Only `positive` is fully supported in v1 (the lipid
   rules are positive-mode only).
@@ -145,17 +161,18 @@ my_project/
 - **Partial re-runs:** parameters are passed to rules as `params`, so
   Snakemake (≥ 8, default rerun triggers) re-runs only the affected rules
   when a value changes in the app. Changing a network cutoff does not
-  re-run feature finding.
+  re-run feature finding. This is tested: changing an export parameter re-runs
+  only the export. A rule's params therefore hold only the sections it uses.
 
 ## 6. Workflow stages
 
 | # | Stage | Env | Main outputs | Notes |
 |---|---|---|---|---|
-| 1 | Conversion | conversion | `work/mzml/*.mzML` | Thermo `.raw` files → ThermoRawFileParser (bioconda). Bruker/Agilent `.d`, Sciex `.wiff`, Waters `.raw` directories → ProteoWizard msconvert in Docker (`proteowizard/pwiz-skyline-i-agree-to-the-vendor-licenses`, `peakPicking vendor`). `.mzML` files pass through. |
-| 2 | Preprocessing (per file) | core | `work/features/*.featureXML` | pyOpenMS: centroid if still in profile mode → precursor correction to MS1 peak → MassTraceDetection → ElutionPeakDetection → FeatureFindingMetabo → feature filter → precursor correction to feature. |
-| 3 | Alignment and linking | core | `work/consensus.consensusXML` | MapAlignerPoseClustering (reference = file with the most features) → MetaboliteAdductDecharger per file → IDMapper (MS2 → features) → FeatureLinkerUnlabeledKD. |
-| 4 | Gap filling | core | `work/consensus_requant.consensusXML` | UmetaFlow's scheme: FeatureFinderMetaboIdent re-extracts consensus features in the files where they are missing, then decharger → IDMapper → linker again. Missing-value filter at the end. |
-| 5 | Export | core | `results/gnps/*`, `features.parquet`, `quant.parquet` | pyOpenMS GNPSMGFFile / GNPSQuantificationFile / GNPSMetaValueFile plus IIMN pairs. We keep the GNPS FBMN schema and don't invent a new one. The Parquet tables are the internal canonical form of the same data. A SIRIUS `.ms` export carries the MS1 isotope patterns. |
+| 1 | Conversion (`convert_thermo`, `link_mzml`) | conversion | `work/mzml/*.mzML` | Thermo `.raw` → ThermoRawFileParser 1.4.5 (bioconda, vendor centroiding). A centroided `.mzML` input is symlinked, not copied. Other vendors: convert to centroided mzML elsewhere (msconvert support was dropped). |
+| 2 | Feature finding (`find_features`, per run) | core | `work/features/*.featureXML`, `*.precursors.tsv` | pyOpenMS: precursor correction to the most intense MS1 peak → MassTraceDetection → ElutionPeakDetection → FeatureFindingMetabo → precursor correction to the feature. Refuses profile data. |
+| 3 | Alignment and linking (`align`, `annotate_run`, `link`) | core | `work/alignment/*.trafoXML`, `work/consensus/linked.consensusXML` | MapAlignerPoseClustering (reference = run with the most features) → per run, on the aligned RT axis: MetaboliteAdductDecharger + IDMapper (MS2 → features) → FeatureLinkerUnlabeledKD. |
+| 4 | Gap filling (`plan_gap_filling`, `fill_gaps`, `link_gap_filled`) | core | `work/consensus/gap_filled.consensusXML` | UmetaFlow's scheme: features found in every run are kept, and the others are re-extracted with FeatureFinderMetaboIdent in *all* runs (consistent values). Then decharger → IDMapper → linker again. Can be switched off. |
+| 5 | Export (`export`) | core | `results/gnps/*`, `features.parquet`, `quant.parquet` | Detection-fraction filter, then features with MS2 are numbered first (`feature_id` = GNPS row ID = MGF SCANS). pyOpenMS GNPSMGFFile / GNPSQuantificationFile + IIMN pairs, and a GNPS metadata table from `samples.tsv`. We keep the GNPS FBMN schema and don't invent a new one. The Parquet tables cover *all* features (with or without MS2). (M3: SIRIUS `.ms` export with MS1 isotope patterns.) |
 | 6 | Spectrum QC and blank flag | core | `spectra_qc.parquet`, `stats/blank_flags.parquet` | Independent filters only: minimum peak count (low default, because lipid MS2 is sparse), precursor intensity, blank ratio (mean blank / mean sample). **Never filter on the similarity score.** The blank flag is computed once and reused by the network, annotation and stats. |
 | 7 | Scoring | core | `work/similarities.npz` | matchms. `score = modified_cosine` (fragment tolerance from the preset) or `ms2deepscore` (pretrained MS2DeepScore 2 model, embeddings cached, CPU or CUDA picked automatically). Both can be computed side by side for comparison. |
 | 8 | Network | core | `network/edges.parquet`, `nodes.parquet`, `network.graphml` | Top-N pool → score cutoff + minimum matched peaks (cosine only) → top-K per node → iterative removal of the weakest edges while a component exceeds the size cap. Components = molecular families (GNPS definition), Louvain communities inside them (networkx, `resolution` parameter). IIMN adduct edges are kept as a separate edge type. Layout is precomputed per component and packed into a grid, so the app opens instantly. |
@@ -174,7 +191,7 @@ the tuned values become the preset defaults.
 
 Every annotator is one Snakemake rule that writes
 `results/annotations/<source>.parquet` with the shared candidate schema
-defined in `fbmnflow.contracts`:
+defined in `atlas_ms.contracts`:
 
 | Column | Meaning |
 |---|---|
@@ -257,6 +274,9 @@ Several layers each contribute evidence, and harmonization combines them.
    - It returns the species level (`PC 34:1`). When chain-specific
      fragments or losses are present it returns the molecular-species level
      (`TG 16:0_18:1_18:2`).
+   - Samples are mostly wastewater, so anything can be present: the rule
+     set must cover the broad range of lipid classes, not one matrix.
+     Restricting the search to chosen classes is a v2 option.
    - Starting positive-mode rule set:
 
      | Class | Adduct | Evidence |
@@ -334,7 +354,7 @@ your machine.
 
 ## 11. Panel app
 
-Launched with `fbmnflow app`, which serves on `localhost` and opens the
+Launched with `atlas_ms app`, which serves on `localhost` and opens the
 browser. One project is open at a time.
 
 **Sidebar:** open or create a project, instrument preset, polarity, adducts,
@@ -389,13 +409,13 @@ Run / Stop, progress bar and log pane.
 
 | Env | Key contents | Why separate |
 |---|---|---|
-| core (`environment.yml`) | Python 3.12, snakemake 9, pyopenms 3.5, matchms, ms2deepscore, pyopenms-viz, panel/holoviews/bokeh/datashader, networkx, duckdb, pyarrow, pygoslin, py4cytoscape, scikit-learn, statsmodels, scikit-bio | pyopenms-viz needs Python ≥ 3.12 |
+| core (`environment.yml` → `pyproject.toml`) | M1: Python 3.12, snakemake 9, pyopenms 3.5.0 (pinned), param, pandas, pyarrow, pyyaml. Later: matchms, ms2deepscore, pyopenms-viz, panel/holoviews/bokeh/datashader, networkx, duckdb, pygoslin, py4cytoscape, scikit-learn, statsmodels, scikit-bio | pyopenms-viz needs Python ≥ 3.12 |
 | ms2query | ms2query 1.5.4 | pins matchms ≤ 0.26.4, ms2deepscore == 2.0.0, torch < 2.6 |
 | ms2lda | ms2lda 2.0.1 | needs matchms ≥ 0.27, Python 3.11–3.12, spec2vec 0.8 |
 | sirius | sirius-ms 6.5.x + py-sirius-ms (matching version) | pinned pair |
-| conversion | thermorawfileparser (+ Docker on the host for msconvert) | bioconda / system |
+| conversion | thermorawfileparser 1.4.5 (on Mono) | bioconda |
 
-**One-time downloads** go to a shared cache (`~/.cache/fbmnflow`, configurable),
+**One-time downloads** go to a shared cache (`~/.cache/atlas_ms`, configurable),
 through download rules with checksums:
 
 | Resource | Used by | License / note |
@@ -413,11 +433,20 @@ to by path.
 
 ## 13. Testing
 
-- **Unit tests (pytest):** synthetic spectra and features for scoring,
-  network construction, level rules, lipid rules, Goslin normalization and
-  config round-trips.
-- **Workflow test:** `snakemake -n` (dry run) on a tiny fixture project, plus
-  a real run on a small mzML subset once the dataset arrives.
+- **Synthetic data:** `tests/synthetic.py` writes small centroided DDA runs
+  (8 lipids: Gaussian elution, isotope peaks, class-specific fragments,
+  RT shifts, a 3-fold TG change, a Cer 300 times weaker in one run, a DG
+  without MS2).
+- **Unit tests (pytest):** configuration, presets and sample tables now.
+  Later: scoring, network construction, level rules, lipid rules and Goslin
+  normalization.
+- **Workflow tests:** the real Snakemake workflow on the synthetic study
+  (about 15 s). They check that every compound is found once, the gap filling
+  recovers the weak Cer, the TG fold change, PC [M+H]+/[M+Na]+ adduct grouping,
+  matching ids between the Parquet tables and the GNPS files, the export when
+  there is no MS2, dry-run DAGs (Thermo conversion, gap filling off) and that
+  a parameter change re-runs only the affected rules. Then a real run on the
+  user's dataset.
 - **External tools** (SIRIUS, MS2Query, downloads) are mocked in the
   automated tests.
 - **Limits of this cloud session:** zenodo.org, GitHub release downloads,
@@ -426,9 +455,10 @@ to by path.
 
 ## 14. Milestones
 
-1. **Skeleton + preprocessing.** Package, core env, config classes, project
-   folder, Snakefile with conversion → preprocessing → gap filling → GNPS
-   export. Validated on your dataset against UmetaFlow's output.
+1. **Skeleton + preprocessing (done).** Package, core env, config classes,
+   project folder, CLI, Snakefile with conversion → preprocessing → gap
+   filling → GNPS export, tests on synthetic data. Still to do: validation
+   on the user's dataset against UmetaFlow's output.
 2. **Network + first app.** QC, both scores, construction, families,
    layout, GraphML. App with the Setup and Network tabs (network, feature
    list, pyOpenMS-viz plots), Run button with log.

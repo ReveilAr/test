@@ -1,0 +1,40 @@
+# Adduct presets.
+#
+# Each adduct has:
+#   name         the usual notation, shown in the app and passed to SIRIUS;
+#   openms       the same adduct in OpenMS notation "<formula>:<charge>", used
+#                by MetaboliteAdductDecharger to group ions of one molecule:
+#                  "H:+"        add a proton             -> [M+H]+
+#                  "H-1O-1:+"   add H+, lose H2O (= -OH) -> [M+H-H2O]+
+#                  "H-2O-1:0"   neutral loss of water (combined with a charged adduct)
+#   probability  prior probability of the adduct. The probabilities of the
+#                charged adducts are rescaled to sum to 1 (OpenMS requirement).
+#
+# Choosing a preset copies the list into the project; it can then be edited.
+
+positive_lipids:
+  description: Positive mode with ammonium formate/acetate in the mobile phase (lipidomics)
+  polarity: positive
+  adducts:
+    - {name: "[M+H]+", openms: "H:+", probability: 0.4}
+    - {name: "[M+NH4]+", openms: "NH4:+", probability: 0.3}
+    - {name: "[M+Na]+", openms: "Na:+", probability: 0.2}
+    - {name: "[M+H-H2O]+", openms: "H-1O-1:+", probability: 0.1}
+
+positive_metabolites:
+  description: Positive mode, general metabolomics (UmetaFlow defaults)
+  polarity: positive
+  adducts:
+    - {name: "[M+H]+", openms: "H:+", probability: 0.6}
+    - {name: "[M+Na]+", openms: "Na:+", probability: 0.1}
+    - {name: "[M+NH4]+", openms: "NH4:+", probability: 0.1}
+    - {name: "[M+H-H2O]+", openms: "H-1O-1:+", probability: 0.1}
+    - {name: "[M+H-2H2O]+", openms: "H-3O-2:+", probability: 0.1}
+
+negative_default:
+  description: Negative mode, formic acid in the mobile phase (UmetaFlow defaults)
+  polarity: negative
+  adducts:
+    - {name: "[M-H]-", openms: "H-1:-", probability: 1.0}
+    - {name: "+HCOOH (neutral)", openms: "CH2O2:0", probability: 0.5}
+    - {name: "-H2O (neutral)", openms: "H-2O-1:0", probability: 0.05}

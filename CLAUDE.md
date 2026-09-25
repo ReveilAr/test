@@ -1,4 +1,4 @@
-# MS/MS → FBMN Molecular Networking Pipeline
+# ATLAS-MS: MS/MS → FBMN Molecular Networking Pipeline
 
 ## Objective
 Process LC-MS/MS data end to end: raw vendor files → aligned feature map →
@@ -10,18 +10,41 @@ The full design is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). This file
 keeps the decisions and the rules every session must follow.
 
 ## Status
-Architecture agreed on 2026-09-25 (draft under review). The dataset comes after
-the architecture is validated. No code yet. `fbmnflow` is a working name for
-the package.
+- **Milestone 1 (preprocessing) implemented:** raw → aligned, gap-filled
+  feature table + GNPS export. It is tested end to end on synthetic data; the
+  user's real dataset is still to come.
+- **Next:** milestone 2 (network + first app).
+- **Name:** ATLAS-MS is a placeholder (Python package `atlas_ms`, command
+  `atlas-ms`). The repo is private and licensing is decided later.
+
+## How to work in this repo
+- **Code style (the user's top priority):** keep the code **simple and
+  extensively commented**, and as efficient as the libraries allow.
+  - Docstrings explain the science and the *why*, not only the *what*.
+  - Prefer pyOpenMS/numpy/pandas built-ins over Python loops over peaks.
+  - No clever abstractions.
+- **Environment:** `conda env create -f environment.yml` installs the
+  package in editable mode. Python dependencies are listed once, in
+  `pyproject.toml`.
+- **Tests:** `pytest` (about 15 s). `tests/synthetic.py` generates the
+  LC-MS runs. Every change to a processing step needs a test with an
+  expected value on the synthetic study.
+- **Running:** `atlas-ms init <project> <files>` then `atlas-ms run <project>`.
+  Snakemake runs with `--directory <project>`, so rule paths are relative to
+  the project folder. `--sdm conda` needs the `conda` command on PATH; the
+  tests run without it (mzML input only).
 
 ## Decisions (from the design Q&A)
 - **Platform:** Linux only for now (Windows maybe later, don't design for it
   yet). Conda environments. Runs locally on laptop/desktop, with or without a
   GPU. 10–100 raw files per project. One project open at a time.
 - **Input:** instrument, polarity and adducts are parameters edited in the
-  Panel app. Conversion uses ThermoRawFileParser for Thermo files and
-  ProteoWizard msconvert (Docker) for the other vendors. Current data is
-  positive mode only, with no QC-based drift correction.
+  Panel app. **Thermo only for now:** ThermoRawFileParser converts `.raw`
+  files and centroided `.mzML` files are linked as they are. msconvert and
+  Docker were dropped. Current data is positive mode only, RP
+  chromatography, with no QC-based drift correction.
+- **Samples:** mostly wastewater, so anything can be present. The lipid rules
+  must cover broad classes. Choosing a subset of classes is a v2 option.
 - **Preprocessing:** UmetaFlow is the base, ported from its OpenMS command-line
   tools to pyOpenMS. Its step order is kept: FFM → align → decharge → IDMapper →
   link → FeatureFinderMetaboIdent gap filling → re-link → export.
@@ -30,7 +53,8 @@ the package.
   network**. Families are connected components, with Louvain communities
   inside them. GraphML is always written, and a py4cytoscape push to Cytoscape
   is in v1.
-- **Annotation:** matchms library search (user MSP/MGF/JSON + public libraries),
+- **Annotation:** matchms library search (user MSP/MGF/JSON, JSON = GNPS
+  flavour, + public libraries),
   MS2Query, SIRIUS 6 through its **REST API** (PySirius), a lipid module,
   MS2LDA 2.0. Pretrained models only.
 - **Confidence (Schymanski):** Level 1 only from libraries flagged as reference
@@ -48,7 +72,8 @@ the package.
 - **Deferred to v2:** MIST-CF, network-aware rescoring, manual curation,
   graph-tool/Leiden, DreaMS, SNAP-MS, STEP/MT-GEM, negative mode, and the
   PubChem / LOTUS / NPAtlas / COCONUT / GNPS2 plugins.
-- **Distribution:** academic only, no commercial distribution.
+- **Distribution:** academic only, no commercial distribution. The repo is
+  private and licensing is decided later.
 
 ## Rules to keep
 - **Formats:** don't reinvent the export format. The GNPS FBMN schema
@@ -63,11 +88,11 @@ the package.
 - **Confidence levels:** harmonization may lower a plugin's proposed level but
   never raise it. Disagreements become flags; candidates are never silently
   dropped.
-- **Code placement:** all logic lives in the `fbmnflow` package. Snakemake
+- **Code placement:** all logic lives in the `atlas_ms` package. Snakemake
   scripts are thin. Tools with conflicting dependencies (MS2Query, MS2LDA,
   SIRIUS client) get their own conda env and exchange files only.
 - **Parameters:** they are defined once, as `param` classes in
-  `fbmnflow.config`. The app renders them and Snakemake validates with the same
+  `atlas_ms.config`. The app renders them and Snakemake validates with the same
   classes.
 - **App:** the Panel app never runs pipeline tools itself. It writes the
   project config, launches Snakemake as a subprocess and reads `results/`.
@@ -75,8 +100,39 @@ the package.
   Datashader for large rasterized views such as peak maps.
 - **Resources:** never commit spectral libraries, models or raw data. They are
   downloaded to a cache or referenced by path.
+- **mzML files:** never write a modified copy of an mzML file. Corrections are
+  small side files (`work/features/<s>.precursors.tsv` for precursor m/z,
+  `work/alignment/<s>.trafoXML` for RT), re-applied in memory by
+  `msdata.load_run`.
+- **Feature ids:** features with MS2 come first, so
+  `feature_id` = GNPS `row ID` = MGF `SCANS` for them. Features without MS2
+  follow, in the internal tables only.
+- **Rule parameters:** a rule's `params` must hold only values that rule uses.
+  Snakemake re-runs a rule whenever one of its params changes (e.g. the
+  preset names live in their own `presets` section for this reason).
 - **Tests:** tests must not need network access, a SIRIUS account or GPUs.
   Mock the external tools.
+
+## pyOpenMS 3.5 quirks (found while building milestone 1)
+- **MassTraceDetection** loses most traces when some MS1 scans have no peak
+  above `noise_threshold_int`. `msdata.ms1_experiment(min_intensity=...)`
+  drops those scans first, which is harmless.
+- **IDMapper** labels its identification run `UNKNOWN_SEARCH_RUN_IDENTIFIER`
+  in every file, and the linked consensusXML then can't be saved. Pass a
+  `ProteinIdentification` with a unique identifier (the sample name).
+- **Getters that fill a list:** `FeatureMap.getPrimaryMSRunPath(list)` (and
+  similar getters) fill a list argument instead of returning a value.
+- **PrecursorCorrection** looks spectra up by RT: two MS2 scans with exactly
+  the same RT get mixed up. Real data never has this; synthetic data must
+  avoid it.
+- **IIMN meta values** on consensus features are named `row ID`,
+  `best ion`, `partners` and `annotation network number`.
+- **writeSupplementaryPairTable** writes no file when there are no adduct
+  pairs.
+- **PyYAML** reads `1.0e4` as a string (YAML 1.1). Write `10000.0`.
+- **ThermoRawFileParser 1.4.5 (bioconda, runs on Mono):** `--input=`,
+  `--output=` (a file) and `--format=2` (indexed mzML). Vendor peak picking
+  is on by default.
 
 ## Verified facts (2026-09)
 - **UmetaFlow** (`biosustain/snakemake_UmetaFlow`, Apache-2.0): Linux/macOS
@@ -114,10 +170,8 @@ The code licenses above all allow commercial use. What restricts commercial
 use is the SIRIUS web-service terms and the NC data licenses.
 
 ## Open items
-- JSON library flavour (GNPS, MoNA or MassBank JSON).
-- Chromatography (RP assumed for the lipid RT/ECN model) and the sample
-  matrix, which decide the lipid classes to prioritize.
-- Replacing pyMolNetEnhancer with a reimplementation of its
-  family-consensus logic (proposed).
-- Final package name and the license of our own code (BSD-3-Clause proposed).
-- Docker on the user's machines (needed for msconvert on Linux).
+- Replacing pyMolNetEnhancer with a reimplementation of its family-consensus
+  logic (proposed, not yet confirmed).
+- Final name and license (later).
+- Instrument auto-detection from ThermoRawFileParser metadata (`--metadata`),
+  to pre-select the preset in the app (idea for milestone 2).

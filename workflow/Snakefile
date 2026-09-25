@@ -1,0 +1,59 @@
+"""
+ATLAS-MS workflow.
+
+Started by `atlas-ms run <project>` (or by the app), which calls
+
+    snakemake --snakefile <repo>/workflow/Snakefile --directory <project>
+              --configfile <project>/project.yaml --cores N --sdm conda
+
+so every path below is relative to the project folder. The logic lives in
+the `atlas_ms` package; each rule only wires files and parameters to it.
+
+Multi-run steps list the runs in the order of samples.tsv: that order is
+the OpenMS "map index" everywhere (consensus columns, GNPS export...).
+"""
+
+import re
+
+from atlas_ms.config import ProjectConfig
+from atlas_ms.project import raw_format, read_samples
+
+# Parameters and samples. Both are validated here, so a mistake in
+# project.yaml or samples.tsv stops the run before any processing.
+CFG = ProjectConfig.from_dict(config)
+SAMPLES = read_samples("samples.tsv")
+NAMES = list(SAMPLES.index)
+
+
+def names_regex(names):
+    """Regex matching exactly these sample names (or nothing, if empty)."""
+    return "|".join(re.escape(name) for name in names) or "(?!x)x"
+
+
+# Sample names grouped by raw file format: decides the conversion rule.
+THERMO = names_regex([n for n in NAMES if raw_format(SAMPLES.loc[n, "file"]) == "thermo"])
+MZML = names_regex([n for n in NAMES if raw_format(SAMPLES.loc[n, "file"]) == "mzml"])
+
+wildcard_constraints:
+    sample=names_regex(NAMES),
+
+# Final outputs of the workflow (milestone 1: preprocessing).
+RESULTS = {
+    "features": "results/features.parquet",
+    "quant": "results/quant.parquet",
+    "mgf": "results/gnps/ms2_spectra.mgf",
+    "gnps_quant": "results/gnps/quantification_table.txt",
+    "gnps_metadata": "results/gnps/metadata.tsv",
+    "gnps_pairs": "results/gnps/iimn_supplementary_pairs.csv",
+}
+
+
+rule all:
+    input:
+        RESULTS.values(),
+
+
+include: "rules/conversion.smk"
+include: "rules/preprocessing.smk"
+include: "rules/gap_filling.smk"
+include: "rules/export.smk"
