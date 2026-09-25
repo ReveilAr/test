@@ -12,11 +12,16 @@ keeps the decisions and the rules every session must follow.
 ## Status
 - **Milestone 1 (preprocessing) implemented:** raw → aligned, gap-filled
   feature table + GNPS export. It is tested end to end on synthetic data.
-- **First real run** (user's bacterial lipid data, 4 Thermo runs): about 2,000–
-  2,400 features per run, 4,122 linked features, 1,134 of them complete,
-  4,016 after gap filling, 1,348 with MS2. That run revealed two problems,
-  both since fixed: empty MS2 spectra dropped features from the MGF, and
-  features were lost when re-extraction failed.
+- **Real-data runs** (user's bacterial lipids, 4 Thermo runs of *different
+  species*, so the low overlap is expected): about 2,000–2,400 features per
+  run, 4,122 linked, 1,134 found in all runs.
+  - Run 1: 4,016 features after gap filling and 1,348 with MS2, but only
+    1,256 spectra in the MGF.
+  - Run 2, after the fixes: 4,120 features, 1,374 with MS2, 1,374 spectra
+    written, 13% missing values.
+  - Run 2 also showed that gap filling mixed two intensity scales, and the
+    OpenMS peptide isotope model used for targets. Gap filling was reworked
+    (see Preprocessing); run 3 is to be checked.
 - **Next:** milestone 2 (network + first app).
 - **Name:** ATLAS-MS is a placeholder (Python package `atlas_ms`, command
   `atlas-ms`). The repo is private and licensing is decided later.
@@ -58,9 +63,16 @@ keeps the decisions and the rules every session must follow.
   deviations, both fixing data loss:
   - MS2 spectra without peaks are not attached to features
     (`annotate.drop_empty_ms2`);
-  - when gap filling fails to re-extract a target in a run where untargeted
-    feature finding had found it, the original feature is kept
-    (`gap_filling.merge_gap_filled`).
+  - **Gap filling only fills gaps** (`gap_filling.merge_gap_filled`).
+    Detected features are never replaced by re-extracted ones: re-extraction
+    can pick a neighbouring isomer. Re-extracted values are added only where
+    a run had no feature. They are converted to the detected scale: first
+    to the monoisotopic share, then by the per-run median ratio
+    detected/re-extracted over targets that have both. Targets carry their
+    measured isotope pattern (FFM `masstrace_intensity`) instead of OpenMS's
+    peptide model. UmetaFlow instead re-extracts incomplete features in
+    every run, which loses values when extraction fails and mixes two
+    intensity definitions (trace area vs. model area summed over M+M+1).
 - **Network:** the user chooses modified cosine *or* MS2DeepScore in the app.
   Parameters start from placeholders and are tuned **once, after the first real
   network**. Families are connected components, with Louvain communities
@@ -146,6 +158,14 @@ keeps the decisions and the rules every session must follow.
   consensus map. For each feature it takes the MS2 spectrum from the run where
   the feature is most intense, and skips the feature if that spectrum is
   empty, even when other runs have good spectra. Hence `drop_empty_ms2`.
+- **FeatureFinderMetaboIdent:**
+  - Without a formula or an isotope pattern, it logs "No sum formula given…
+    using estimation method for peptides" once per target.
+  - Its feature intensity is a fitted-model area **summed over the extracted
+    isotope traces**. Each trace subordinate has `native_id` `…_i<k>` and
+    `isotope_probability`.
+  - "SignalToNoiseEstimatorMedian: 100% of all windows were sparse" warnings
+    are harmless.
 - **PyYAML** reads `1.0e4` as a string (YAML 1.1). Write `10000.0`.
 - **ThermoRawFileParser 1.4.5 (bioconda, runs on Mono):** `--input=`,
   `--output=` (a file) and `--format=2` (indexed mzML). Vendor peak picking

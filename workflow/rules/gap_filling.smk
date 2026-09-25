@@ -5,7 +5,9 @@
 rule plan_gap_filling:
     """Re-extraction targets, and which consensus feature every feature belongs to."""
     input:
-        "work/consensus/linked.consensusXML",
+        consensus="work/consensus/linked.consensusXML",
+        # The linked feature maps, for the measured isotope patterns.
+        features=expand("work/annotated/{sample}.featureXML", sample=NAMES),
     output:
         targets="work/gap_filling/targets.tsv",
         members="work/gap_filling/members.tsv",
