@@ -15,7 +15,9 @@ Annotation and statistics come next.
 ## Install (Linux)
 
 ```bash
-conda env create -f environment.yml   # from the repository root
+git clone https://github.com/ReveilAr/test.git atlas-ms   # a clone, not a ZIP: updates are a `git pull`
+cd atlas-ms
+conda env create -f environment.yml
 conda activate atlas-ms
 ```
 
@@ -37,7 +39,7 @@ atlas-ms init my_study data/*.raw --instrument orbitrap --adducts positive_lipid
 atlas-ms run my_study --cores 4
 
 # Or do all of it in the app (opens in the browser)
-atlas-ms app my_study
+atlas-ms app my_study   # port 5006, or the next free one if it is taken
 ```
 
 The app's sidebar opens or creates a project and runs the pipeline. The

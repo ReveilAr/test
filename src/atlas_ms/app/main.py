@@ -12,6 +12,7 @@ The ATLAS-MS app: one page with a sidebar (project, run) and tabs.
 One project is open at a time. Opening another one rebuilds the page.
 """
 
+import socket
 from pathlib import Path
 
 import panel as pn
@@ -105,6 +106,24 @@ class AtlasApp:
         )
 
 
+def free_port(port: int, attempts: int = 20) -> int:
+    """
+    The first port, from ``port`` on, that nothing is listening on. A port
+    is often still taken by an app left running in another terminal.
+    """
+    for candidate in range(port, port + attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind(("", candidate))  # all interfaces, as the app server does
+            except OSError:
+                continue
+            return candidate
+    raise OSError(f"Ports {port}-{port + attempts - 1} are all in use: choose another one with --port")
+
+
 def serve(project_dir: str | None = None, port: int = 5006, show: bool = True) -> None:
     """Start the app server; each browser tab gets its own page."""
-    pn.serve(lambda: AtlasApp(project_dir).page(), port=port, show=show, title="ATLAS-MS")
+    chosen = free_port(port)
+    if chosen != port:
+        print(f"Port {port} is already in use (another ATLAS-MS app still running?): using port {chosen}.")
+    pn.serve(lambda: AtlasApp(project_dir).page(), port=chosen, show=show, title="ATLAS-MS")

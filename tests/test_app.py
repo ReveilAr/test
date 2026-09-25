@@ -2,13 +2,14 @@
 
 import asyncio
 import shutil
+import socket
 import sys
 
 import pandas as pd
 import pytest
 
 from atlas_ms.app.data import ChromatogramReader, load_results, read_mgf
-from atlas_ms.app.main import AtlasApp
+from atlas_ms.app.main import AtlasApp, free_port
 from atlas_ms.app.run_view import RunPanel
 from atlas_ms.app.setup_view import SetupTab
 from atlas_ms.project import Project
@@ -81,3 +82,11 @@ def test_run_panel_shows_progress_and_reloads(project_copy):
     assert asyncio.run(panel.run()) == 0
     assert panel.progress.value == 100 and reloaded == [True]
     assert "2 of 2 steps" in panel.log.object
+
+
+def test_a_busy_port_is_skipped():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as busy:
+        busy.bind(("", 0))  # any free port, now taken
+        busy.listen()
+        port = busy.getsockname()[1]
+        assert free_port(port) != port

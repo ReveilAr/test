@@ -68,7 +68,11 @@ keeps the decisions and the rules every session must follow.
   `atlas-ms run <project> -- --forcerun <rule>` to use. The user runs the
   code from their own clone: they must `git pull` it (merging on GitHub is
   not enough). Every rule log's first line gives the commit and folder of
-  the code (`logs.code_version`).
+  the code (`logs.code_version`). The user's install at one point ran from
+  a `test-main/` folder, which looks like a GitHub ZIP download (no git, so
+  `commit unknown`, and `git pull` impossible). The README recommends a clone.
+- **App port:** `atlas-ms app` uses port 5006, or the next free port if it
+  is taken (`app.main.free_port`), usually by an app left running.
 
 ## Decisions (from the design Q&A)
 - **Platform:** Linux only for now (Windows maybe later, don't design for it
