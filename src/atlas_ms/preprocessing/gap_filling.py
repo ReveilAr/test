@@ -1,18 +1,22 @@
 """
 Gap filling: targeted re-extraction of features missing in some runs
-(UmetaFlow's requantification rules).
+(UmetaFlow's requantification rules, plus one safeguard).
 
 A compound can be missed by untargeted feature finding in a run where it is
-weak, which leaves gaps in the feature table. UmetaFlow's scheme, kept here:
+weak, which leaves gaps in the feature table. The scheme:
 
 1. ``plan_gap_filling``: split the linked consensus features into
    * "complete" ones, found in every run: their features are kept as they are;
    * "incomplete" ones: they become targets (m/z, charge, RT) for
      re-extraction.
 2. ``fill_gaps`` (per run): FeatureFinderMetaboIdent extracts every target
-   from the raw data, in *every* run, so all values of an incomplete feature
-   come from the same method. The extracted features are merged with the
-   complete ones, then adduct grouping and MS2 mapping are redone.
+   from the raw data, in *every* run, so that all values of an incomplete
+   feature come from the same method (UmetaFlow's choice).
+   Safeguard (not in UmetaFlow): when the extraction of a target fails in a
+   run where untargeted feature finding had found it, the original feature
+   is kept. Otherwise that value is lost, and a feature whose extraction
+   fails everywhere disappears from the table.
+   Adduct grouping and MS2 mapping are then redone on the merged features.
 3. The runs are linked again (``linking.link_runs``).
 """
 
@@ -40,25 +44,34 @@ log = logging.getLogger(__name__)
 PROTON_MASS = 1.007276466  # u
 
 
-def plan_gap_filling(consensus_file: str | Path, targets_out: str | Path, complete_out: str | Path) -> None:
+def plan_gap_filling(consensus_file: str | Path, targets_out: str | Path, members_out: str | Path) -> None:
     """
-    Write the re-extraction targets and the list of features to keep.
+    Write the re-extraction targets, and where every existing feature belongs.
 
-    targets.tsv:    target, mz, charge, rt       (one row per incomplete consensus feature)
-    complete.tsv:   map_index, feature_id        (features of the complete consensus features)
+    targets.tsv:  target, mz, charge, rt           one row per incomplete consensus feature
+    members.tsv:  map_index, feature_id, target    one row per feature of any consensus
+                                                   feature; target is empty for complete ones
     """
     consensus = load_consensus_map(consensus_file)
     n_runs = len(consensus.getColumnHeaders())
-    targets, complete = [], []
+    targets, members = [], []
     for index, cfeature in enumerate(consensus):
-        if cfeature.size() == n_runs:
-            # Unique ids are 64-bit unsigned integers: stored as text to avoid overflow.
-            complete.extend((h.getMapIndex(), str(h.getUniqueId())) for h in cfeature.getFeatureList())
-        else:
-            targets.append((f"target_{index}", cfeature.getMZ(), cfeature.getCharge(), cfeature.getRT()))
+        target = ""
+        if cfeature.size() < n_runs:
+            target = f"target_{index}"
+            targets.append((target, cfeature.getMZ(), cfeature.getCharge(), cfeature.getRT()))
+        # Unique ids are 64-bit unsigned integers: stored as text to avoid overflow.
+        members.extend((h.getMapIndex(), str(h.getUniqueId()), target) for h in cfeature.getFeatureList())
     pd.DataFrame(targets, columns=["target", "mz", "charge", "rt"]).to_csv(targets_out, sep="\t", index=False)
-    pd.DataFrame(complete, columns=["map_index", "feature_id"]).to_csv(complete_out, sep="\t", index=False)
+    pd.DataFrame(members, columns=["map_index", "feature_id", "target"]).to_csv(members_out, sep="\t", index=False)
     log.info("%d complete consensus features, %d targets for gap filling", consensus.size() - len(targets), len(targets))
+
+
+def read_members(members_file: str | Path, map_index: int) -> dict[str, str]:
+    """Feature id -> target name ("" for complete features), for one run."""
+    members = pd.read_csv(members_file, sep="\t", dtype=str, keep_default_na=False)
+    members = members[members["map_index"] == str(map_index)]
+    return dict(zip(members["feature_id"], members["target"]))
 
 
 def extract_targets(
@@ -69,7 +82,10 @@ def extract_targets(
     settings: GapFillingSettings,
     mzml: str | Path,
 ) -> oms.FeatureMap:
-    """Targeted extraction of ``targets`` from one run (FeatureFinderMetaboIdent)."""
+    """
+    Targeted extraction of ``targets`` from one run (FeatureFinderMetaboIdent).
+    Each extracted feature carries its target name as the "label" meta value.
+    """
     features = oms.FeatureMap()
     if targets.empty:
         return features
@@ -102,13 +118,42 @@ def extract_targets(
     return features
 
 
+def merge_gap_filled(
+    features: oms.FeatureMap,
+    members: dict[str, str],
+    extracted: oms.FeatureMap,
+) -> oms.FeatureMap:
+    """
+    The features of one run after gap filling:
+
+    * features of complete consensus features (``members`` target "");
+    * every re-extracted feature;
+    * original features of incomplete consensus features whose target was
+      *not* re-extracted in this run (the safeguard, see module docstring).
+
+    Features that belong to no consensus feature are dropped. The linker
+    places every feature in a consensus feature, so none are expected.
+    """
+    extracted_targets = {feature.getMetaValue("label") for feature in extracted}
+    merged = oms.FeatureMap(features)
+    merged.clear(False)  # False: empty the features but keep the map's metadata
+    for feature in features:
+        target = members.get(str(feature.getUniqueId()))
+        if target == "" or (target and target not in extracted_targets):
+            merged.push_back(feature)
+    for feature in extracted:
+        merged.push_back(feature)
+    merged.setUniqueIds()
+    return merged
+
+
 def fill_gaps(
     mzml: str | Path,
     precursors: str | Path,
     features_in: str | Path,
     trafo: str | Path,
     targets_file: str | Path,
-    complete_file: str | Path,
+    members_file: str | Path,
     map_index: int,
     features_out: str | Path,
     run_name: str,
@@ -127,22 +172,17 @@ def fill_gaps(
     experiment = load_run(mzml, precursors, trafo)
     features = load_feature_map(features_in)
     apply_trafo(features, load_trafo(trafo))
+    members = read_members(members_file, map_index)
 
-    # Keep the features that belong to complete consensus features.
-    complete = pd.read_csv(complete_file, sep="\t", dtype={"feature_id": str})
-    keep_ids = set(complete.loc[complete["map_index"] == map_index, "feature_id"])
-    merged = oms.FeatureMap(features)
-    merged.clear(False)  # False: empty the features but keep the map's metadata
-    for feature in features:
-        if str(feature.getUniqueId()) in keep_ids:
-            merged.push_back(feature)
-    n_kept = merged.size()
-
-    # Re-extract every target in this run and add the results.
     targets = pd.read_csv(targets_file, sep="\t")
-    for feature in extract_targets(experiment, targets, adducts.polarity, instrument, settings, mzml):
-        merged.push_back(feature)
-    merged.setUniqueIds()
-    log.info("%s: %d features kept + %d re-extracted (%d targets)", run_name, n_kept, merged.size() - n_kept, len(targets))
+    extracted = extract_targets(experiment, targets, adducts.polarity, instrument, settings, mzml)
+    merged = merge_gap_filled(features, members, extracted)
 
+    n_complete = sum(1 for target in members.values() if target == "")
+    n_rescued = merged.size() - n_complete - extracted.size()
+    log.info(
+        "%s: %d targets, %d re-extracted, %d original features kept where re-extraction failed, "
+        "%d features from complete consensus features",
+        run_name, len(targets), extracted.size(), n_rescued, n_complete,
+    )
     store_feature_map(features_out, annotate_features(merged, experiment, run_name, adducts))

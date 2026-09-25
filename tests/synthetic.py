@@ -12,7 +12,9 @@ DDA run to exercise the whole preprocessing chain:
 * per-sample retention-time shifts (to exercise the alignment) and intensity
   changes (to give the statistics something to find);
 * the option to make a compound too weak to be picked by the untargeted
-  feature finder in one sample, so that gap filling has something to recover.
+  feature finder in one sample, so that gap filling has something to recover;
+* the option to record a compound's MS2 scan without any peak, as happens on
+  real instruments (e.g. scans triggered on noise).
 
 Everything is deterministic (fixed random seed) so tests are reproducible.
 """
@@ -65,6 +67,7 @@ def write_mzml(
     scan_interval: float = 0.5,
     fwhm: float = 5.0,
     ppm_error: float = 1.0,
+    empty_ms2: set[str] | None = None,
 ) -> Path:
     """
     Write one synthetic centroided DDA run and return its path.
@@ -83,6 +86,8 @@ def write_mzml(
         Chromatographic peak width at half maximum (s).
     ppm_error
         Standard deviation of the random m/z error added to each centroid (ppm).
+    empty_ms2
+        Names of compounds whose MS2 scan is recorded without any peak.
     """
     rng = np.random.default_rng(seed)
     factors = intensity_factors or {}
@@ -144,7 +149,7 @@ def write_mzml(
             precursor.setCharge(1)
             precursor.setIntensity(height)
             ms2.setPrecursors([precursor])
-            frag = sorted(compound.fragments)
+            frag = [] if compound.name in (empty_ms2 or set()) else sorted(compound.fragments)
             ms2.set_peaks((
                 np.array([mz for mz, _ in frag]),
                 np.array([rel * height * 0.2 for _, rel in frag], dtype=np.float32),
@@ -166,15 +171,20 @@ def write_study(directory: str | Path) -> list[Path]:
     * ``treat_2``: same as ``treat_1`` but Cer is 300 times weaker, below
       the noise threshold used in the tests. Untargeted feature finding
       misses it there, so gap filling must recover it.
+
+    In both treated runs, where TG is most intense, its MS2 scan has no peaks.
+    Only the control runs give a usable TG spectrum.
     """
     directory = Path(directory)
+    tg = "TG 52:2 [M+NH4]+"
     runs = [
-        ("ctrl_1", 0.0, {}, 1),
-        ("ctrl_2", 2.0, {}, 2),
-        ("treat_1", -3.0, {"TG 52:2 [M+NH4]+": 3.0}, 3),
-        ("treat_2", 4.0, {"TG 52:2 [M+NH4]+": 3.0, "Cer 34:1;O2 [M+H]+": 1 / 300}, 4),
+        ("ctrl_1", 0.0, {}, set(), 1),
+        ("ctrl_2", 2.0, {}, set(), 2),
+        ("treat_1", -3.0, {tg: 3.0}, {tg}, 3),
+        ("treat_2", 4.0, {tg: 3.0, "Cer 34:1;O2 [M+H]+": 1 / 300}, {tg}, 4),
     ]
     return [
-        write_mzml(directory / f"{name}.mzML", LIPIDS, rt_shift=shift, intensity_factors=factors, seed=seed)
-        for name, shift, factors, seed in runs
+        write_mzml(directory / f"{name}.mzML", LIPIDS, rt_shift=shift, intensity_factors=factors,
+                   seed=seed, empty_ms2=empty)
+        for name, shift, factors, empty, seed in runs
     ]

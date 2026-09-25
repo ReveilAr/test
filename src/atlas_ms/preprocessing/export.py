@@ -154,7 +154,13 @@ def export_gnps(
         # OpenMS writes nothing when no adduct pairs were found.
         pairs.write_text("ID1,ID2,EdgeType,Score,Annotation\n")
     gnps_metadata(samples, mzml_files).to_csv(gnps_dir / "metadata.tsv", sep="\t", index=False)
-    log.info("GNPS export: %d features with MS2", subset.size())
+
+    # The MGF writer skips a feature when its chosen spectrum is empty (see
+    # annotate.drop_empty_ms2, which prevents it). Report and check it.
+    n_spectra = (gnps_dir / "ms2_spectra.mgf").read_text().count("BEGIN IONS")
+    log.info("GNPS export: %d features with MS2, %d spectra written to the MGF", subset.size(), n_spectra)
+    if n_spectra < subset.size():
+        log.warning("%d features with MS2 have no spectrum in the MGF", subset.size() - n_spectra)
 
 
 def export_results(
@@ -180,6 +186,10 @@ def export_results(
     features, quant = feature_tables(annotated, list(samples.index))
     features.to_parquet(features_out, index=False)
     quant.to_parquet(quant_out, index=False)
-    log.info("%d features (%d with MS2) x %d samples", len(features), int(features["has_ms2"].sum()), len(samples))
+    missing = quant.drop(columns="feature_id").isna().to_numpy().mean() if len(quant) else 0.0
+    log.info(
+        "%d features (%d with MS2) x %d samples, %.1f%% missing values",
+        len(features), int(features["has_ms2"].sum()), len(samples), 100 * missing,
+    )
 
     export_gnps(consensus, mzml_files, samples, gnps_dir, gnps_consensus_out, settings)

@@ -11,7 +11,7 @@ fill_gaps(
     features_in=snakemake.input.features,
     trafo=snakemake.input.trafo,
     targets_file=snakemake.input.targets,
-    complete_file=snakemake.input.complete,
+    members_file=snakemake.input.members,
     map_index=snakemake.params.map_index,
     features_out=snakemake.output[0],
     run_name=snakemake.wildcards.sample,

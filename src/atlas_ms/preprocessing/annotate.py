@@ -70,6 +70,34 @@ def attach_ms2(features: oms.FeatureMap, experiment: oms.MSExperiment, run_name:
     # hull), not only its apex; use_centroid_mz=True: match on the feature
     # m/z. These are the IDMapper tool defaults used by UmetaFlow.
     oms.IDMapper().annotate(features, oms.PeptideIdentificationList(), [id_run], False, True, experiment)
+    drop_empty_ms2(features, experiment)
+
+
+def drop_empty_ms2(features: oms.FeatureMap, experiment: oms.MSExperiment) -> None:
+    """
+    Detach MS2 spectra that have no peaks (in place).
+
+    Instruments record some MS2 scans without any centroid, e.g. scans
+    triggered on noise. They are useless, and harmful at export: the GNPS MGF
+    writer takes each feature's spectrum from the run where the feature is
+    most intense, and skips the whole feature if that spectrum is empty,
+    even when other runs have good spectra. A feature whose only spectra are
+    empty becomes a feature without MS2.
+    """
+    n_dropped = 0
+    for index in range(features.size()):
+        feature = features[index]  # a copy (pyOpenMS)
+        attached = feature.getPeptideIdentifications()
+        usable = oms.PeptideIdentificationList()
+        for ms2 in attached:
+            if experiment[int(ms2.getMetaValue("spectrum_index"))].size() > 0:
+                usable.push_back(ms2)
+        if usable.size() < attached.size():
+            n_dropped += attached.size() - usable.size()
+            feature.setPeptideIdentifications(usable)
+            features[index] = feature  # write the modified copy back
+    if n_dropped:
+        log.info("%d MS2 spectra without peaks were not attached to features", n_dropped)
 
 
 def annotate_features(

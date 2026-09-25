@@ -11,8 +11,12 @@ keeps the decisions and the rules every session must follow.
 
 ## Status
 - **Milestone 1 (preprocessing) implemented:** raw → aligned, gap-filled
-  feature table + GNPS export. It is tested end to end on synthetic data; the
-  user's real dataset is still to come.
+  feature table + GNPS export. It is tested end to end on synthetic data.
+- **First real run** (user's bacterial lipid data, 4 Thermo runs): about 2,000–
+  2,400 features per run, 4,122 linked features, 1,134 of them complete,
+  4,016 after gap filling, 1,348 with MS2. That run revealed two problems,
+  both since fixed: empty MS2 spectra dropped features from the MGF, and
+  features were lost when re-extraction failed.
 - **Next:** milestone 2 (network + first app).
 - **Name:** ATLAS-MS is a placeholder (Python package `atlas_ms`, command
   `atlas-ms`). The repo is private and licensing is decided later.
@@ -44,10 +48,19 @@ keeps the decisions and the rules every session must follow.
   Docker were dropped. Current data is positive mode only, RP
   chromatography, with no QC-based drift correction.
 - **Samples:** mostly wastewater, so anything can be present. The lipid rules
-  must cover broad classes. Choosing a subset of classes is a v2 option.
+  must cover broad classes. Choosing a subset of classes is a v2 option. The
+  user's own test data are **bacterial lipids**, so the rule set must include
+  bacterial classes (e.g. PE, PG, cardiolipins, lyso forms, ornithine lipids,
+  glycolipids), not only the mammalian ones.
 - **Preprocessing:** UmetaFlow is the base, ported from its OpenMS command-line
   tools to pyOpenMS. Its step order is kept: FFM → align → decharge → IDMapper →
-  link → FeatureFinderMetaboIdent gap filling → re-link → export.
+  link → FeatureFinderMetaboIdent gap filling → re-link → export. Two
+  deviations, both fixing data loss:
+  - MS2 spectra without peaks are not attached to features
+    (`annotate.drop_empty_ms2`);
+  - when gap filling fails to re-extract a target in a run where untargeted
+    feature finding had found it, the original feature is kept
+    (`gap_filling.merge_gap_filled`).
 - **Network:** the user chooses modified cosine *or* MS2DeepScore in the app.
   Parameters start from placeholders and are tuned **once, after the first real
   network**. Families are connected components, with Louvain communities
@@ -129,6 +142,10 @@ keeps the decisions and the rules every session must follow.
   `best ion`, `partners` and `annotation network number`.
 - **writeSupplementaryPairTable** writes no file when there are no adduct
   pairs.
+- **GNPSMGFFile** (source checked) numbers entries `SCANS = position + 1` in the
+  consensus map. For each feature it takes the MS2 spectrum from the run where
+  the feature is most intense, and skips the feature if that spectrum is
+  empty, even when other runs have good spectra. Hence `drop_empty_ms2`.
 - **PyYAML** reads `1.0e4` as a string (YAML 1.1). Write `10000.0`.
 - **ThermoRawFileParser 1.4.5 (bioconda, runs on Mono):** `--input=`,
   `--output=` (a file) and `--format=2` (indexed mzML). Vendor peak picking

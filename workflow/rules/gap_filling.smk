@@ -3,12 +3,12 @@
 
 
 rule plan_gap_filling:
-    """Split linked features into complete ones and re-extraction targets."""
+    """Re-extraction targets, and which consensus feature every feature belongs to."""
     input:
         "work/consensus/linked.consensusXML",
     output:
         targets="work/gap_filling/targets.tsv",
-        complete="work/gap_filling/complete.tsv",
+        members="work/gap_filling/members.tsv",
     log:
         "logs/plan_gap_filling.log",
     script:
@@ -16,14 +16,14 @@ rule plan_gap_filling:
 
 
 rule fill_gaps:
-    """Targeted re-extraction in one run, merged with its complete features."""
+    """Targeted re-extraction in one run, merged with the features to keep."""
     input:
         mzml="work/mzml/{sample}.mzML",
         precursors="work/features/{sample}.precursors.tsv",
         features="work/features/{sample}.featureXML",
         trafo="work/alignment/{sample}.trafoXML",
         targets="work/gap_filling/targets.tsv",
-        complete="work/gap_filling/complete.tsv",
+        members="work/gap_filling/members.tsv",
     output:
         "work/gap_filling/{sample}.featureXML",
     params:

@@ -110,7 +110,7 @@ my_project/
 │   ├── features/         # <s>.featureXML + <s>.precursors.tsv (corrected precursor m/z)
 │   ├── alignment/        # <s>.trafoXML (RT transformation)
 │   ├── annotated/        # <s>.featureXML after adduct grouping + MS2 mapping
-│   ├── gap_filling/      # targets.tsv, complete.tsv, <s>.featureXML
+│   ├── gap_filling/      # targets.tsv, members.tsv, <s>.featureXML
 │   ├── consensus/        # linked.consensusXML, gap_filled.consensusXML
 │   └── export/           # gnps.consensusXML (input of the MGF writer)
 ├── results/
@@ -171,7 +171,7 @@ step needs the spectra (`atlas_ms.preprocessing.msdata.load_run`).
 | 1 | Conversion (`convert_thermo`, `link_mzml`) | conversion | `work/mzml/*.mzML` | Thermo `.raw` → ThermoRawFileParser 1.4.5 (bioconda, vendor centroiding). A centroided `.mzML` input is symlinked, not copied. Other vendors: convert to centroided mzML elsewhere (msconvert support was dropped). |
 | 2 | Feature finding (`find_features`, per run) | core | `work/features/*.featureXML`, `*.precursors.tsv` | pyOpenMS: precursor correction to the most intense MS1 peak → MassTraceDetection → ElutionPeakDetection → FeatureFindingMetabo → precursor correction to the feature. Refuses profile data. |
 | 3 | Alignment and linking (`align`, `annotate_run`, `link`) | core | `work/alignment/*.trafoXML`, `work/consensus/linked.consensusXML` | MapAlignerPoseClustering (reference = run with the most features) → per run, on the aligned RT axis: MetaboliteAdductDecharger + IDMapper (MS2 → features) → FeatureLinkerUnlabeledKD. |
-| 4 | Gap filling (`plan_gap_filling`, `fill_gaps`, `link_gap_filled`) | core | `work/consensus/gap_filled.consensusXML` | UmetaFlow's scheme: features found in every run are kept, and the others are re-extracted with FeatureFinderMetaboIdent in *all* runs (consistent values). Then decharger → IDMapper → linker again. Can be switched off. |
+| 4 | Gap filling (`plan_gap_filling`, `fill_gaps`, `link_gap_filled`) | core | `work/consensus/gap_filled.consensusXML` | UmetaFlow's scheme: features found in every run are kept, and the others are re-extracted with FeatureFinderMetaboIdent in *all* runs (consistent values). Safeguard: where the re-extraction fails but untargeted finding had found the feature, the original is kept. Then decharger → IDMapper (MS2 spectra without peaks are ignored) → linker again. Can be switched off. |
 | 5 | Export (`export`) | core | `results/gnps/*`, `features.parquet`, `quant.parquet` | Detection-fraction filter, then features with MS2 are numbered first (`feature_id` = GNPS row ID = MGF SCANS). pyOpenMS GNPSMGFFile / GNPSQuantificationFile + IIMN pairs, and a GNPS metadata table from `samples.tsv`. We keep the GNPS FBMN schema and don't invent a new one. The Parquet tables cover *all* features (with or without MS2). (M3: SIRIUS `.ms` export with MS1 isotope patterns.) |
 | 6 | Spectrum QC and blank flag | core | `spectra_qc.parquet`, `stats/blank_flags.parquet` | Independent filters only: minimum peak count (low default, because lipid MS2 is sparse), precursor intensity, blank ratio (mean blank / mean sample). **Never filter on the similarity score.** The blank flag is computed once and reused by the network, annotation and stats. |
 | 7 | Scoring | core | `work/similarities.npz` | matchms. `score = modified_cosine` (fragment tolerance from the preset) or `ms2deepscore` (pretrained MS2DeepScore 2 model, embeddings cached, CPU or CUDA picked automatically). Both can be computed side by side for comparison. |
