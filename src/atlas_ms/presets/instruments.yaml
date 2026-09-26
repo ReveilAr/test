@@ -29,6 +29,9 @@ orbitrap:
   lipids:
     precursor_tolerance_ppm: 5.0
     fragment_tolerance_da: 0.01
+  sirius:
+    profile: orbitrap
+    ms2_ppm: 5.0
 
 qtof:
   description: Q-TOF (Bruker, Agilent, Sciex, Waters) with UHPLC
@@ -51,3 +54,6 @@ qtof:
   lipids:
     precursor_tolerance_ppm: 10.0
     fragment_tolerance_da: 0.02
+  sirius:
+    profile: qtof
+    ms2_ppm: 10.0

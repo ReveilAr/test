@@ -1,0 +1,13 @@
+# SIRIUS 6 (local REST service) and its Python client, pinned together:
+# the client version is tied to the SIRIUS version. Used by the `run_sirius`
+# rule only (a separate environment: exchanges files with the core one).
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11
+  - sirius-ms=6.5.4
+  - py-sirius-ms=3.2+sirius6.5.4
+  - numpy
+  - pandas
+  - pyarrow

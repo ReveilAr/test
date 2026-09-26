@@ -9,7 +9,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from atlas_ms.app.data import ChromatogramReader, load_results, read_mgf
+from atlas_ms.app.data import load_results, read_mgf
+from atlas_ms.preprocessing.msdata import RunReader
 from atlas_ms.app.main import AtlasApp, free_port
 from atlas_ms.app.run_view import RunPanel
 from atlas_ms.app.setup_view import SetupTab
@@ -36,7 +37,7 @@ def test_mgf_reader(processed_project):
 def test_chromatograms_follow_the_simulated_intensities(processed_project):
     results = load_results(processed_project)
     cer = feature_of(results.features, "Cer 34:1;O2 [M+H]+")
-    reader = ChromatogramReader(processed_project, list(processed_project.load_samples().index))
+    reader = RunReader(processed_project.root, list(processed_project.load_samples().index))
     apex = reader.xic(cer["mz"], cer["rt"]).groupby("sample")["intensity"].max()
     assert apex["ctrl_1"] / apex["treat_2"] == pytest.approx(300, rel=0.05)
 

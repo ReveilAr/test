@@ -17,6 +17,7 @@ both in memory with ``load_run`` (fast C++ operations).
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pyopenms as oms
 
@@ -158,3 +159,90 @@ def set_parameters(algorithm, values: dict) -> None:
     for key, value in values.items():
         parameters.setValue(key, value)
     algorithm.setParameters(parameters)
+
+
+# ---- Reading runs on the aligned RT axis ----
+
+C13_DELTA = 1.0033548  # spacing of the isotope peaks (13C - 12C)
+
+
+class RunReader:
+    """
+    Access to the MS1 scans of the runs of a project, on the aligned
+    retention-time axis: extracted ion chromatograms (the app) and isotope
+    patterns (the SIRIUS input).
+
+    The mzML files are opened "on disc": only the spectra needed are read,
+    so this stays light even with 100 large runs. Each run's RT
+    transformation (from the alignment) maps its own time axis onto the
+    aligned one.
+    """
+
+    def __init__(self, project_root: str | Path, sample_names: list[str]):
+        self.root = Path(project_root)
+        self.samples = sample_names
+        self._runs = {}  # sample -> opened run (see _open)
+
+    def _open(self, sample: str) -> dict:
+        """Open a run once: file handle, MS1 spectrum indices and RTs, RT transformations."""
+        if sample not in self._runs:
+            experiment = oms.OnDiscMSExperiment()
+            experiment.openFile(str(self.root / "work" / "mzml" / f"{sample}.mzML"))
+            metadata = experiment.getMetaData()  # spectra without their peaks: cheap
+            ms1 = [(index, spectrum.getRT()) for index, spectrum in enumerate(metadata.getSpectra())
+                   if spectrum.getMSLevel() == 1]
+            trafo = load_trafo(self.root / "work" / "alignment" / f"{sample}.trafoXML")
+            inverse = oms.TransformationDescription(trafo)
+            inverse.invert()  # aligned RT -> this run's RT
+            self._runs[sample] = {
+                "experiment": experiment,
+                "indices": np.array([i for i, _ in ms1]),
+                "rts": np.array([rt for _, rt in ms1]),
+                "trafo": trafo,
+                "inverse": inverse,
+            }
+        return self._runs[sample]
+
+    def xic(self, mz: float, rt: float, ppm: float = 10.0, rt_window: float = 60.0) -> pd.DataFrame:
+        """
+        Summed intensity within ``mz`` +/- ``ppm`` in every MS1 scan within
+        ``rt_window`` seconds around the aligned ``rt``, for every run.
+        Columns: sample, rt (aligned, s), intensity.
+        """
+        tolerance = mz * ppm * 1e-6
+        frames = []
+        for sample in self.samples:
+            run = self._open(sample)
+            start = run["inverse"].apply(rt - rt_window / 2)
+            end = run["inverse"].apply(rt + rt_window / 2)
+            first, last = np.searchsorted(run["rts"], [start, end])
+            points = []
+            for index, scan_rt in zip(run["indices"][first:last], run["rts"][first:last]):
+                mzs, intensities = run["experiment"].getSpectrum(int(index)).get_peaks()
+                low, high = np.searchsorted(mzs, [mz - tolerance, mz + tolerance])  # centroids are sorted
+                points.append((run["trafo"].apply(float(scan_rt)), float(intensities[low:high].sum())))
+            frames.append(pd.DataFrame(points, columns=["rt", "intensity"]).assign(sample=sample))
+        return pd.concat(frames, ignore_index=True)[["sample", "rt", "intensity"]]
+
+    def isotope_pattern(self, sample: str, mz: float, rt: float, ppm: float = 10.0,
+                        max_isotopes: int = 5, charge: int = 1) -> list[tuple[float, float]]:
+        """
+        The isotope pattern (m/z, intensity) of an ion in one run, from the
+        MS1 scan closest to the aligned ``rt``: the most intense centroid
+        within ``ppm`` of mz, mz + 1.0034 / charge, ... until an isotope is
+        missing. Empty if even the monoisotopic peak is missing.
+        """
+        run = self._open(sample)
+        if len(run["rts"]) == 0:
+            return []
+        nearest = int(np.argmin(np.abs(run["rts"] - run["inverse"].apply(rt))))  # this run's own RT axis
+        mzs, intensities = run["experiment"].getSpectrum(int(run["indices"][nearest])).get_peaks()
+        pattern = []
+        for k in range(max_isotopes):
+            target = mz + k * C13_DELTA / charge
+            low, high = np.searchsorted(mzs, [target - target * ppm * 1e-6, target + target * ppm * 1e-6])
+            if high == low:
+                break
+            best = low + int(np.argmax(intensities[low:high]))
+            pattern.append((float(mzs[best]), float(intensities[best])))
+        return pattern

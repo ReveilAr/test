@@ -20,7 +20,8 @@ from pathlib import Path
 import panel as pn
 
 from atlas_ms.app.annotation_view import AnnotationTab
-from atlas_ms.app.data import ChromatogramReader, load_results
+from atlas_ms.app.data import load_results
+from atlas_ms.preprocessing.msdata import RunReader
 from atlas_ms.app.network_view import NetworkTab
 from atlas_ms.app.run_view import RunPanel
 from atlas_ms.app.setup_view import SetupTab
@@ -95,7 +96,7 @@ class AtlasApp:
         tabs = [("Setup", self.setup.layout)]
         results = load_results(self.project)
         if results is not None:
-            reader = ChromatogramReader(self.project, list(self.project.load_samples().index))
+            reader = RunReader(self.project.root, list(self.project.load_samples().index))
             tolerance = self.setup.config.scoring.fragment_tolerance_da
             self.network = NetworkTab(results, reader, fragment_tolerance=tolerance)
             self.annotation = AnnotationTab(results, self.network)

@@ -27,7 +27,8 @@ from atlas_ms.project import SAMPLE_TYPES, Project
 
 # Sections shown as plain parameter boxes (presets and adducts have their own widgets).
 PARAMETER_SECTIONS = [name for name in SECTIONS if name not in ("presets", "adducts")]
-TITLES = {"spectrum_qc": "Spectrum QC"}  # card titles that differ from the capitalised section name
+# Card titles that differ from the capitalised section name.
+TITLES = {"spectrum_qc": "Spectrum QC", "lipids": "Lipid rules", "sirius": "SIRIUS", "ms2query": "MS2Query"}
 HIDDEN = {"name", "libraries"}  # parameters with their own editor (libraries: the library table)
 LIBRARY_COLUMNS = ["name", "path", "kind", "reference_standards", "rt_unit", "rt_tolerance_s"]
 

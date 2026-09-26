@@ -52,7 +52,7 @@ keeps the decisions and the rules every session must follow.
     (`graph.node_radius`, shared with the app); glasbey_dark colours, no
     outlines, no dimming. The user is happy with the Network tab otherwise.
   - Network tuning (milestone 5) is postponed: the user asked for milestone 3.
-- **Milestone 3 (annotation) in progress.**
+- **Milestone 3 (annotation) implemented.**
   - Done: `atlas_ms.annotation`: shared candidate format (`schema.py`),
     matchms library search (`libraries.py`), rule-based lipids
     (`lipids.py` + `presets/lipid_rules.yaml`, 26 classes incl. bacterial),
@@ -60,8 +60,13 @@ keeps the decisions and the rules every session must follow.
     consensus). App: Annotation tab, library editor in Setup, level / lipid
     class colouring. GraphML now written after harmonization
     (`export_graphml`).
-  - Next: SIRIUS REST API, MS2Query, public libraries (this cloud session
-    cannot download them: the user's machine does).
+  - SIRIUS 6 (`sirius_input.py` in the core env, `sirius.py` in its own env)
+    and MS2Query (`ms2query.py`, own env) are built and tested with a fake
+    PySirius client / a results file; both are off by default and must be
+    tried on the user's machine (SIRIUS account; MS2Query downloads a few
+    GB from Zenodo, blocked here).
+  - Still to do: public libraries, CANOPUS-vs-structure and formula
+    disagreement flags; then network tuning (milestone 5) and milestone 4.
 - **Name:** ATLAS-MS is a placeholder (Python package `atlas_ms`, command
   `atlas-ms`). The repo is private and licensing is decided later.
 
@@ -133,7 +138,9 @@ keeps the decisions and the rules every session must follow.
   MS2Query, SIRIUS 6 through its **REST API** (PySirius), a lipid module,
   MS2LDA 2.0. Pretrained models only.
 - **Confidence (Schymanski):** Level 1 only from libraries flagged as reference
-  standards (with RT). CSI:FingerID is **capped at Level 3** whatever its COSMIC
+  standards (with RT). MS2Query hits are all level 3: it reports no cosine
+  or matched fragments to confirm an exact match as 2a (decided when
+  building it; exact matches are marked in the evidence). CSI:FingerID is **capped at Level 3** whatever its COSMIC
   confidence. Formula disagreement (SIRIUS vs MIST-CF, in v2) is a **flag, not
   a demotion**. No manual curation in v1. In-silico library hits are at most
   Level 3. Lipids also carry a Liebisch structural level.
@@ -276,6 +283,21 @@ keeps the decisions and the rules every session must follow.
 - **Snakemake params are compared as text:** a dict whose key order changes
   (e.g. after `yaml.safe_dump` sorts keys) re-runs the rule. Library entries
   are therefore returned with sorted keys (`LibrarySearchSettings.library`).
+- **SIRIUS / PySirius 6.5.4:** conda-forge `sirius-ms=6.5.4` and
+  `py-sirius-ms=3.2+sirius6.5.4` (the client has its own version number).
+  Not on PyPI. The generated client source (sirius-ms/sirius-client-openAPI)
+  lists every method: `add_aligned_features(project_id, [FeatureImport],
+  profile)` with `external_feature_id`; `BasicSpectrum` needs
+  `cosine_query`; formula scores need `opt_fields=["statistics"]` and El
+  Gordo `"lipidAnnotation"`; COSMIC confidences are in the aligned
+  feature's `top_annotations`.
+- **MS2Query 1.5.4** (bioconda): `run_ms2query_single_file` writes
+  `<results folder>/<spectrum file stem>.csv` (a numbered name if it
+  exists); `additional_metadata_columns=("scans",)` carries our feature id.
+- **Scripts in other conda envs:** Snakemake sets `__file__` to the
+  script's real path, so `Path(__file__).parents[2] / "src"` finds the
+  package; the Snakemake object itself unpickles thanks to Snakemake's own
+  search path.
 - **ThermoRawFileParser 1.4.5 (bioconda, runs on Mono):** `--input=`,
   `--output=` (a file) and `--format=2` (indexed mzML). Vendor peak picking
   is on by default.

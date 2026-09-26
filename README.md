@@ -7,13 +7,12 @@ is planned.
 > Working name, private project. Design: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 > Decisions and project rules: [`CLAUDE.md`](CLAUDE.md).
 
-**Status: milestones 1–2, milestone 3 in progress.** The pipeline goes from
-raw files to an aligned, gap-filled feature table, a GNPS FBMN export, a
-molecular network (modified cosine or MS2DeepScore) and annotations with
-Schymanski confidence levels: spectral library search and rule-based lipid
-annotation, combined into one best annotation per feature. The app has
-Setup, Network and Annotation tabs. SIRIUS, MS2Query and statistics come
-next.
+**Status: milestones 1–3.** The pipeline goes from raw files to an aligned,
+gap-filled feature table, a GNPS FBMN export, a molecular network (modified
+cosine or MS2DeepScore) and annotations with Schymanski confidence levels:
+spectral library search, rule-based lipid annotation, and optionally
+SIRIUS 6 and MS2Query, combined into one best annotation per feature. The
+app has Setup, Network and Annotation tabs. Statistics come next.
 
 ## Install (Linux)
 
@@ -66,6 +65,19 @@ Mark a library as *reference standards* only if its spectra were measured
 on your own method, with retention times: only those can give level 1.
 In-silico libraries (e.g. LipidBlast) give at most level 3.
 
+**SIRIUS 6** (formulas, El Gordo lipids, CSI:FingerID structures, CANOPUS
+classes) and **MS2Query** (analog search) are switched on in the Setup
+tab's parameters (the SIRIUS and MS2Query cards). The pipeline installs both in their
+own conda environments on first use.
+
+- SIRIUS needs a free academic account: sign in once in the SIRIUS 6
+  GUI (or `sirius login`). The pipeline uses a SIRIUS that is already
+  running, or starts its own. The SIRIUS project is kept in
+  `work/sirius/project.sirius` for the GUI. Expect hours for thousands of
+  features.
+- MS2Query downloads its library and models (a few GB) once, to
+  `~/.cache/atlas-ms/ms2query/`.
+
 The first MS2DeepScore run downloads the pretrained model (about 130 MB)
 to `~/.cache/atlas-ms/models/`.
 
@@ -78,7 +90,7 @@ Results in `my_study/results/`:
 | `quant_gap_filled.parquet` | same shape, `True` where the value was re-extracted by gap filling (less precise than a detected value) |
 | `gnps/` | GNPS FBMN input in "OpenMS" format: `ms2_spectra.mgf`, `quantification_table.txt`, `metadata.tsv`, `iimn_supplementary_pairs.csv` |
 | `network/` | `nodes.parquet` (family, community, layout, spectrum QC), `edges.parquet` (spectral and adduct edges), `network.graphml` (open in Cytoscape; with the best annotations) |
-| `annotations/` | `library.parquet`, `lipid_rules.parquet` (candidates of each source), `candidates.parquet` (all, with final levels), `best.parquet` (one best annotation per feature, flags, family class consensus) |
+| `annotations/` | `library.parquet`, `lipid_rules.parquet`, `sirius.parquet`, `ms2query.parquet` (candidates of each source), `candidates.parquet` (all, with final levels), `best.parquet` (one best annotation per feature, flags, family class consensus) |
 
 Feature ids are the same everywhere. Features with MS2 are numbered first,
 so `feature_id` = GNPS `row ID` = MGF `SCANS`.

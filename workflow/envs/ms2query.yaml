@@ -1,0 +1,12 @@
+# MS2Query 1.5.4: it needs matchms <= 0.26.4, ms2deepscore 2.0.0 and
+# torch < 2.6, which conflict with the core environment. Used by the MS2Query
+# rules only.
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - python=3.11
+  - ms2query=1.5.4
+  - pandas
+  - pyarrow

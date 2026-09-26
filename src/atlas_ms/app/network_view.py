@@ -36,7 +36,8 @@ from bokeh.models.widgets.tables import NumberFormatter
 from bokeh.palettes import Viridis256
 from colorcet import glasbey_dark
 
-from atlas_ms.app.data import ChromatogramReader, Results, find_fragments, log_intensity
+from atlas_ms.app.data import Results, find_fragments, log_intensity
+from atlas_ms.preprocessing.msdata import RunReader
 from atlas_ms.app.plots import chromatogram_plot, mirror_plot, spectrum_plot
 from atlas_ms.network.graph import MAX_RADIUS, MEDIAN_RADIUS, node_radius, size_reference
 
@@ -142,7 +143,7 @@ class NetworkTab(param.Parameterized):
     selected = param.List(default=[], doc="Selected feature ids")
     matched = param.List(default=[], doc="Feature ids found by the fragment search")
 
-    def __init__(self, results: Results, reader: ChromatogramReader, fragment_tolerance: float = 0.01, **params):
+    def __init__(self, results: Results, reader: RunReader, fragment_tolerance: float = 0.01, **params):
         super().__init__(**params)
         self.results = results
         self.reader = reader

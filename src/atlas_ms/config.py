@@ -406,6 +406,59 @@ class LipidSettings(Section):
     )
 
 
+class SiriusSettings(Section):
+    """
+    SIRIUS 6 (local REST service, installed by the pipeline in its own conda
+    environment): molecular formula + ZODIAC, El Gordo lipids, CSI:FingerID
+    structures with COSMIC confidence, CANOPUS classes. Off by default.
+    """
+
+    enabled = param.Boolean(
+        default=False,
+        doc="Needs a free academic SIRIUS account for CSI:FingerID and CANOPUS: log in once "
+            "with the SIRIUS GUI or `sirius login`. Takes hours for thousands of features.",
+    )
+    profile = param.Selector(default="orbitrap", objects=["orbitrap", "qtof"], doc="SIRIUS instrument profile.")
+    ms2_ppm = param.Number(default=5.0, bounds=(0.1, 50.0), doc="MS2 mass accuracy (ppm) for formula identification.")
+    formula_candidates = param.Integer(default=10, bounds=(1, None), doc="Formula candidates computed per feature.")
+    zodiac = param.Boolean(default=True, doc="Re-rank formulas with ZODIAC (uses the whole data set).")
+    min_formula_score = param.Number(
+        default=0.9, bounds=(0.0, 1.0),
+        doc="The top formula is level 4 when its ZODIAC score (SIRIUS score without ZODIAC) reaches this.",
+    )
+    structure_databases = param.List(
+        default=["BIO"], item_type=str,
+        doc="SIRIUS structure databases searched by CSI:FingerID (e.g. BIO, LIPIDMAPS, or your custom ones).",
+    )
+    expansive_search = param.Selector(
+        default="APPROXIMATE", objects=["OFF", "EXACT", "APPROXIMATE"],
+        doc="Search PubChem when the best database structure has a low COSMIC confidence "
+            "(OFF, or by the exact / approximate confidence).",
+    )
+    canopus = param.Boolean(default=True, doc="Predict compound classes (ClassyFire, NPClassifier).")
+    candidates_kept = param.Integer(default=3, bounds=(1, None), doc="Candidates kept per feature and SIRIUS tool.")
+
+
+class MS2QuerySettings(Section):
+    """
+    MS2Query analog search (own conda environment; its library and models,
+    a few GB, are downloaded once per machine). Off by default.
+    """
+
+    enabled = param.Boolean(default=False)
+    models_dir = param.String(
+        default="", doc="Folder with MS2Query's positive-mode library and models. Empty: downloaded "
+                        "once to ~/.cache/atlas-ms/ms2query/positive/.",
+    )
+    top_n = param.Integer(default=3, bounds=(1, None), doc="Analogs kept per feature.")
+    min_score = param.Number(
+        default=0.7, bounds=(0.0, 1.0), doc="Minimum MS2Query score (the authors report 0.7 as reliable).",
+    )
+    precursor_tolerance_ppm = param.Number(
+        default=10.0, bounds=(0.1, 100.0), doc="An analog within this m/z of the feature is marked as an exact match.",
+    )
+
+
 class HarmonizationSettings(Section):
     """
     Combination of all annotation sources: confidence levels (Schymanski),
@@ -413,8 +466,10 @@ class HarmonizationSettings(Section):
     """
 
     source_priority = param.List(
-        default=["library", "ms2query", "lipid_rules", "sirius"], item_type=str,
-        doc="Between candidates of the same level, the best comes from the first source in this list.",
+        default=["library", "lipid_rules", "sirius:elgordo", "ms2query", "sirius:csi", "sirius:canopus", "sirius"],
+        item_type=str,
+        doc="Between candidates of the same level, the best comes from the first source in this list "
+            "(a name like 'library' covers every library; 'sirius:csi' one SIRIUS tool).",
     )
     rt_model_min_points = param.Integer(
         default=5, bounds=(3, None),
@@ -446,6 +501,8 @@ SECTIONS: dict[str, type[Section]] = {
     "network": NetworkSettings,
     "library_search": LibrarySearchSettings,
     "lipids": LipidSettings,
+    "sirius": SiriusSettings,
+    "ms2query": MS2QuerySettings,
     "harmonization": HarmonizationSettings,
 }
 
@@ -469,6 +526,8 @@ class ProjectConfig:
     network: NetworkSettings
     library_search: LibrarySearchSettings
     lipids: LipidSettings
+    sirius: SiriusSettings
+    ms2query: MS2QuerySettings
     harmonization: HarmonizationSettings
 
     def __init__(self, **sections: Section):

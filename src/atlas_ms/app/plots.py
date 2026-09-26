@@ -118,7 +118,7 @@ def mirror_plot(top: tuple[np.ndarray, np.ndarray], bottom: tuple[np.ndarray, np
 
 def chromatogram_plot(xic: pd.DataFrame, feature_rt_s: float):
     """
-    Extracted ion chromatograms of all runs (``ChromatogramReader.xic``), in
+    Extracted ion chromatograms of all runs (``msdata.RunReader.xic``), in
     minutes on the aligned axis, with a dashed line at the feature's RT.
     """
     data = xic.assign(rt=xic["rt"] / 60.0)

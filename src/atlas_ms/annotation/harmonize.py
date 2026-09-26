@@ -87,9 +87,14 @@ def source_family(source: str) -> str:
 def choose_best(candidates: pd.DataFrame, settings: HarmonizationSettings) -> pd.DataFrame:
     """One row per feature: its most confident candidate."""
     priority = {name: index for index, name in enumerate(settings.source_priority)}
+
+    def rank_of(source: str) -> int:
+        """Position in source_priority: the exact source ("sirius:csi") first, else its family ("sirius")."""
+        return priority.get(source, priority.get(source_family(source), len(priority)))
+
     ranked = candidates.assign(
         _level=candidates["level"].map(LEVEL_RANK),
-        _priority=candidates["source"].map(lambda s: priority.get(source_family(s), len(priority))),
+        _priority=candidates["source"].map(rank_of),
     ).sort_values(["feature_id", "_level", "_priority", "score"], ascending=[True, True, True, False])
     best = ranked.drop_duplicates("feature_id").drop(columns=["_level", "_priority"])
     best["n_candidates"] = best["feature_id"].map(candidates.groupby("feature_id").size())

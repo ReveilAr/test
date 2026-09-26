@@ -3,8 +3,18 @@
 # them into confidence levels and one best annotation per feature.
 
 from atlas_ms.annotation.lipids import rules_path
+from atlas_ms.annotation.ms2query import DOWNLOAD_DONE as MS2QUERY_DOWNLOAD_DONE
+from atlas_ms.annotation.ms2query import models_input as ms2query_models_input
 
 LIBRARY_NAMES = [library["name"] for library in CFG.library_search.libraries]
+
+# The sources the harmonization combines: always the libraries and the lipid
+# rules; SIRIUS and MS2Query when switched on.
+ANNOTATIONS = [RESULTS["library_annotations"], RESULTS["lipid_annotations"]]
+if CFG.sirius.enabled:
+    ANNOTATIONS.append("results/annotations/sirius.parquet")
+if CFG.ms2query.enabled:
+    ANNOTATIONS.append("results/annotations/ms2query.parquet")
 
 
 rule prepare_library:
@@ -62,7 +72,7 @@ rule annotate_lipids:
 rule harmonize:
     """Confidence levels, flags, best annotation per feature, family class consensus."""
     input:
-        annotations=[RESULTS["library_annotations"], RESULTS["lipid_annotations"]],
+        annotations=ANNOTATIONS,
         features=RESULTS["features"],
         # Families and blank flags.
         nodes=RESULTS["nodes"],
@@ -90,3 +100,74 @@ rule export_graphml:
         "logs/export_graphml.log",
     script:
         "../scripts/export_graphml.py"
+
+
+# ---- SIRIUS and MS2Query (own conda environments, off by default) ----------
+
+rule prepare_sirius_input:
+    """MS2 spectra, MS1 isotope patterns and adducts of the features, for SIRIUS."""
+    input:
+        features=RESULTS["features"],
+        quant=RESULTS["quant"],
+        mgf=RESULTS["mgf"],
+        mzml=expand("work/mzml/{sample}.mzML", sample=NAMES),
+        trafo=expand("work/alignment/{sample}.trafoXML", sample=NAMES),
+    output:
+        "work/sirius/input.json",
+    params:
+        samples=NAMES,
+        polarity=CFG.adducts.polarity,
+        ppm=CFG.instrument.mass_error_ppm,
+    log:
+        "logs/prepare_sirius_input.log",
+    script:
+        "../scripts/prepare_sirius_input.py"
+
+
+rule run_sirius:
+    """SIRIUS 6: formula + ZODIAC, El Gordo, CSI:FingerID, CANOPUS (REST API)."""
+    input:
+        "work/sirius/input.json",
+    output:
+        candidates="results/annotations/sirius.parquet",
+        # Kept to be opened in the SIRIUS GUI.
+        project="work/sirius/project.sirius",
+    params:
+        sirius=CFG.sirius.to_dict(),
+        adducts=[adduct["name"] for adduct in CFG.adducts.adducts],
+    log:
+        "logs/run_sirius.log",
+    conda:
+        "../envs/sirius.yaml"
+    script:
+        "../scripts/run_sirius.py"
+
+
+rule download_ms2query_models:
+    """MS2Query's positive-mode library and models, downloaded once per machine."""
+    output:
+        str(MS2QUERY_DOWNLOAD_DONE),
+    log:
+        "logs/download_ms2query_models.log",
+    conda:
+        "../envs/ms2query.yaml"
+    script:
+        "../scripts/download_ms2query_models.py"
+
+
+rule run_ms2query:
+    """MS2Query analog search of every feature MS2 spectrum."""
+    input:
+        mgf=RESULTS["mgf"],
+        models=ms2query_models_input(CFG.ms2query.models_dir),
+    output:
+        candidates="results/annotations/ms2query.parquet",
+        csv="work/ms2query/ms2_spectra.csv",
+    params:
+        ms2query={key: value for key, value in CFG.ms2query.to_dict().items() if key not in ("enabled", "models_dir")},
+    log:
+        "logs/run_ms2query.log",
+    conda:
+        "../envs/ms2query.yaml"
+    script:
+        "../scripts/run_ms2query.py"

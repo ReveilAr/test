@@ -6,9 +6,10 @@ recorded in [`CLAUDE.md`](../CLAUDE.md). ATLAS-MS is a placeholder name
 
 Milestones 1 (preprocessing, §6 stages 1–5) and 2 (network, §6 stages 6–8,
 and the app's Setup and Network tabs, §11) are implemented. Milestone 3
-(annotation) is in progress: spectral library search, rule-based lipid
-annotation, harmonization and the Annotation tab are implemented; SIRIUS and
-MS2Query come next. The other sections describe the plan.
+(annotation) is implemented: spectral library search, rule-based lipid
+annotation, SIRIUS 6 and MS2Query (tested with stand-ins here, to be tried
+on your machine), harmonization and the Annotation tab. The other sections
+describe the plan.
 
 ## 1. Scope
 
@@ -81,7 +82,7 @@ There are three layers, and they only talk to each other through the project fol
 ├── workflow/
 │   ├── Snakefile              # loads/validates project.yaml + samples.tsv, includes the rules
 │   ├── rules/                 # conversion, preprocessing, gap_filling, export, network, annotation (.smk)
-│   ├── envs/                  # conversion.yaml (+ ms2query, ms2lda, sirius later)
+│   ├── envs/                  # conversion.yaml, sirius.yaml, ms2query.yaml (+ ms2lda later)
 │   └── scripts/               # thin entry points -> atlas_ms functions
 ├── src/atlas_ms/
 │   ├── config.py              # param sections = single source of truth for parameters
@@ -92,7 +93,7 @@ There are three layers, and they only talk to each other through the project fol
 │   ├── preprocessing/         # msdata, features, alignment, annotate, linking, gap_filling, export
 │   ├── mgf.py                 # small MGF reader (no matchms: fast to import)
 │   ├── network/               # spectra (QC), scoring, graph (construction, families, layout, GraphML), model_files
-│   ├── annotation/            # schema (candidate format), libraries, lipids, harmonize
+│   ├── annotation/            # schema (candidate format), libraries, lipids, sirius(_input), ms2query, harmonize
 │   ├── stats/                 # (M4) FBMN-STATS port
 │   └── app/                   # Panel app: main, setup_view, run_view, network_view, annotation_view, plots, data
 └── tests/                     # pytest; synthetic.py generates LC-MS runs
@@ -232,8 +233,12 @@ means adding one of three plug-in kinds:
      `in_silico`) and an optional `reference_standards: true` +
      `rt_tolerance`. Level 1 is only possible for those libraries.
 2. **MS2Query** (own env) does exact and analog search against its
-   GNPS-derived positive-mode library. It also reports cosine and modified
-   cosine against the matched spectrum, which the level rules use.
+   GNPS-derived positive-mode library. As built: its CSV has the metascore,
+   precursor m/z difference and ClassyFire / NPC classes, but no cosine or
+   matched-fragment count, so its exact matches cannot be confirmed the
+   2a way: every MS2Query candidate is level 3 (exact matches are marked in
+   the evidence). Hits below `min_score` (0.7, the authors' reliable
+   threshold) are not kept.
 3. **SIRIUS 6 REST API** covers formula + ZODIAC, CSI:FingerID with COSMIC,
    CANOPUS and El Gordo lipids. See §10.
 4. **Lipid module**: see §9.
@@ -246,10 +251,10 @@ identity on their own.
 | Level | Rule in v1 |
 |---|---|
 | 1 | Match against a library flagged `reference_standards`: MS2 score ≥ cutoff, matched peaks ≥ n, precursor within ppm, **and** RT within tolerance. Without an RT match, the same hit is 2a. |
-| 2a | MS2 match against an **experimental** library above the same thresholds (no RT), or an MS2Query exact match (precursor Δ within tolerance) confirmed by its cosine score and matched peaks. |
+| 2a | MS2 match against an **experimental** library above the same thresholds (no RT). (Planned: an MS2Query exact match confirmed by cosine and matched peaks; MS2Query does not report those, so it stays at 3.) |
 | 2b | Not assigned automatically in v1 (manual curation is v2). |
-| 3 | CSI:FingerID top candidate (**capped at 3 whatever the COSMIC confidence**), MS2Query analog, **in-silico** library match (e.g. LipidBlast), rule-based lipid annotation, El Gordo lipid species, CANOPUS class. |
-| 4 | SIRIUS formula with ZODIAC score ≥ cutoff. In v2, MIST-CF disagreement **adds a flag and doesn't change the level**. |
+| 3 | CSI:FingerID candidates (**capped at 3 whatever the COSMIC confidence**), MS2Query hits, **in-silico** library match (e.g. LipidBlast), rule-based lipid annotation, El Gordo lipid species, CANOPUS class. |
+| 4 | Top SIRIUS formula with ZODIAC score (SIRIUS score without ZODIAC) ≥ `min_formula_score` (0.9); the other formula candidates are 5. In v2, MIST-CF disagreement **adds a flag and doesn't change the level**. |
 | 5 | Exact m/z only (LIPID MAPS m/z candidates are listed as suggestions). |
 
 - **Caps (as built):** in-silico library hits, lipid rules, CSI:FingerID,
@@ -349,6 +354,32 @@ level. `[M+Na]+` helps a little. Negative mode (v2) is what unlocks
 molecular species for PC/PE/PI/PS.
 
 ## 10. SIRIUS integration (new REST API)
+
+**As built** (`annotation/sirius_input.py`, `annotation/sirius.py`, rules
+`prepare_sirius_input` and `run_sirius`, `workflow/envs/sirius.yaml` with
+`sirius-ms=6.5.4` and `py-sirius-ms=3.2+sirius6.5.4`, both on conda-forge;
+off by default):
+
+- The core env writes `work/sirius/input.json`: per feature with MS2, the
+  MGF spectrum, the MS1 isotope pattern from the apex scan of the run where
+  the feature is most intense (`msdata.RunReader.isotope_pattern`) and the
+  adduct from the adduct grouping.
+- The sirius env attaches to a running SIRIUS 6 (e.g. your GUI) or starts a
+  headless one (`SiriusSDK.attach_or_start_sirius`), checks the login,
+  creates `work/sirius/project.sirius` (kept, to open in the GUI), imports
+  the features with `add_aligned_features` (our feature id as
+  `externalFeatureId`: no `.ms` file and no id matching needed), runs one
+  job and reads formula candidates (with `lipidAnnotation`), structure
+  candidates (with `dbLinks`), the COSMIC confidences (`topAnnotations`)
+  and the CANOPUS classes (`get_best_matching_compound_classes`). A SIRIUS
+  started by the rule is shut down afterwards; your own is left running.
+- Candidates: `sirius:formula` (top: 4 or 5), `sirius:elgordo`,
+  `sirius:csi`, `sirius:canopus` (3). Source priority at equal level:
+  library, lipid rules, El Gordo, MS2Query, CSI:FingerID, CANOPUS, formula.
+- Tests use a fake client with the same methods as PySirius 6.5.4 (names
+  checked against its generated source).
+
+The original plan follows.
 
 - **Packages:** SIRIUS 6.5.x as a local service (`sirius-ms` on
   conda-forge) and the PySirius client (`py-sirius-ms` on conda-forge,
@@ -525,11 +556,13 @@ to by path.
    layout, GraphML. App with the Setup and Network tabs (network, feature
    list, pyOpenMS-viz plots), Run button with log. Still to do: a first look
    at the user's real network, then tuning (milestone 5).
-3. **Annotation (in progress).** Done: library search (user libraries),
-   rule-based lipid module (26 classes incl. bacterial ones), harmonization
-   with levels, flags and family consensus, Annotation tab, annotated
-   GraphML. Next: SIRIUS API, MS2Query, public libraries (downloaded on
-   your machine: this cloud session cannot reach them).
+3. **Annotation (done, SIRIUS and MS2Query to be tried on your machine).**
+   Library search (user libraries), rule-based lipid module (26 classes
+   incl. bacterial ones), SIRIUS 6 REST API, MS2Query, harmonization with
+   levels, flags and family consensus, Annotation tab, annotated GraphML.
+   Still to do: public libraries (downloaded on your machine: this cloud
+   session cannot reach them), the CANOPUS-vs-structure and formula
+   disagreement flags.
 4. **MS2LDA + stats + Cytoscape.** Statistics tab, Cytoscape push.
 5. **Network tuning.** Tune the network parameters on the first real
    network and update the presets.
