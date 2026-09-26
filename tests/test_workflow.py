@@ -140,6 +140,11 @@ def test_gnps_export_uses_the_same_feature_ids(results):
     assert {int(pairs.iloc[0]["ID1"]), int(pairs.iloc[0]["ID2"])} == pc_ids
 
 
+# Rebuilding the network also redoes what uses it: the harmonized
+# annotations (families, blank flags) and the annotated GraphML.
+AFTER_NETWORK = {"build_network": 1, "harmonize": 1, "export_graphml": 1, "all": 1}
+
+
 def test_only_affected_steps_are_rerun(processed_project, tmp_path):
     # Work on a copy: the processed project is shared by other tests.
     # copytree keeps file times (and the mzML symbolic links).
@@ -151,19 +156,20 @@ def test_only_affected_steps_are_rerun(processed_project, tmp_path):
     samples = pd.read_csv(root / "samples.tsv", sep="\t")
     samples["ATTRIBUTE_batch"] = "b1"
     samples.to_csv(root / "samples.tsv", sep="\t", index=False)
-    assert planned_jobs(snakemake(root, "--dry-run")) == {"gnps_metadata": 1, "build_network": 1, "all": 1}
+    assert planned_jobs(snakemake(root, "--dry-run")) == {"gnps_metadata": 1, **AFTER_NETWORK}
 
     # Network cutoffs: only the network construction, never the scoring.
     config = yaml.safe_load((root / "project.yaml").read_text())
     config["network"]["top_k"] = 5
     (root / "project.yaml").write_text(yaml.safe_dump(config))
-    assert planned_jobs(snakemake(root, "--dry-run")) == {"gnps_metadata": 1, "build_network": 1, "all": 1}
+    assert planned_jobs(snakemake(root, "--dry-run")) == {"gnps_metadata": 1, **AFTER_NETWORK}
 
     # Export parameters: the export and the network built from it.
     config["export"]["min_detection_fraction"] = 0.5
     (root / "project.yaml").write_text(yaml.safe_dump(config))
     assert planned_jobs(snakemake(root, "--dry-run")) == {
-        "export": 1, "gnps_metadata": 1, "spectrum_qc": 1, "score_spectra": 1, "build_network": 1, "all": 1,
+        "export": 1, "gnps_metadata": 1, "spectrum_qc": 1, "score_spectra": 1,
+        "search_libraries": 1, "annotate_lipids": 1, **AFTER_NETWORK,
     }
 
     config["linking"]["rt_tol_s"] = 20.0

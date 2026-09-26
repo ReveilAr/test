@@ -34,7 +34,7 @@ keeps the decisions and the rules every session must follow.
     `results/quant_gap_filled.parquet` (and `features.n_gap_filled`) for the
     statistics.
   - **Preprocessing is considered validated on real data.**
-- **Milestone 2 done** (awaiting the user's first real network).
+- **Milestone 2 done.**
   - `atlas_ms.network`: spectrum QC → modified cosine or MS2DeepScore
     candidate pool → GNPS-style network, families, Louvain communities,
     layout, GraphML.
@@ -51,8 +51,17 @@ keeps the decisions and the rules every session must follow.
     layout is scaled on edge length and reserves each node's largest size
     (`graph.node_radius`, shared with the app); glasbey_dark colours, no
     outlines, no dimming. The user is happy with the Network tab otherwise.
-  - Next: tuning on the real network (milestone 5), then milestone 3
-    (annotation).
+  - Network tuning (milestone 5) is postponed: the user asked for milestone 3.
+- **Milestone 3 (annotation) in progress.**
+  - Done: `atlas_ms.annotation`: shared candidate format (`schema.py`),
+    matchms library search (`libraries.py`), rule-based lipids
+    (`lipids.py` + `presets/lipid_rules.yaml`, 26 classes incl. bacterial),
+    harmonization (`harmonize.py`: level caps, flags, RT trend, family
+    consensus). App: Annotation tab, library editor in Setup, level / lipid
+    class colouring. GraphML now written after harmonization
+    (`export_graphml`).
+  - Next: SIRIUS REST API, MS2Query, public libraries (this cloud session
+    cannot download them: the user's machine does).
 - **Name:** ATLAS-MS is a placeholder (Python package `atlas_ms`, command
   `atlas-ms`). The repo is private and licensing is decided later.
 
@@ -209,7 +218,7 @@ keeps the decisions and the rules every session must follow.
     are harmless.
 - **PyYAML** reads `1.0e4` as a string (YAML 1.1). Write `10000.0`.
 
-## Other library notes (milestone 2)
+## Other library notes (milestones 2 and 3)
 - **matchms 0.33:** `ModifiedCosine` is now `ModifiedCosineGreedy` (and
   `ModifiedCosineHungarian`, exact but slower). `.matrix()` returns a
   structured array with fields `score` and `matches`.
@@ -252,6 +261,21 @@ keeps the decisions and the rules every session must follow.
   gives a "contains" search box per column (it also matches numbers). Use
   `NumberFormatter` formatters for fixed decimals: the default format adds
   thousands separators.
+- **Bokeh ranges** only see glyph centres: circles with a data-unit radius
+  are cut at the plot edges unless `xlim` / `ylim` include the radius.
+- **Panel Tabulator header filters + Playwright:** `locator.fill()` sets the
+  text without key events, so the filter only applies when the next click
+  blurs the box, and that click is lost. Use `locator.type()` in screenshot
+  scripts. With the filter applied, selections map correctly.
+- **pygoslin 2.2 (Goslin):** parses most shorthand names (`PC 16:0_18:1`,
+  `PC(16:0/18:1(9Z))`, `Cer 18:1;O2/16:0`) but not ornithine lipids or
+  DGTS; methylated PEs are `PE-NMe` / `PE-NMe2`; CE comes out as
+  `SE 27:1/18:1` (mapped back to CE); HexCer's headgroup reads as `Cer`
+  (the class is taken from the species name instead). Import takes 0.6 s:
+  `lipids.parse_lipid` imports it on first use.
+- **Snakemake params are compared as text:** a dict whose key order changes
+  (e.g. after `yaml.safe_dump` sorts keys) re-runs the rule. Library entries
+  are therefore returned with sorted keys (`LibrarySearchSettings.library`).
 - **ThermoRawFileParser 1.4.5 (bioconda, runs on Mono):** `--input=`,
   `--output=` (a file) and `--format=2` (indexed mzML). Vendor peak picking
   is on by default.

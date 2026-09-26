@@ -38,7 +38,7 @@ from colorcet import glasbey_dark
 
 from atlas_ms.app.data import ChromatogramReader, Results, find_fragments, log_intensity
 from atlas_ms.app.plots import chromatogram_plot, mirror_plot, spectrum_plot
-from atlas_ms.network.graph import MEDIAN_RADIUS, node_radius, size_reference
+from atlas_ms.network.graph import MAX_RADIUS, MEDIAN_RADIUS, node_radius, size_reference
 
 hv.extension("bokeh")
 
@@ -46,19 +46,23 @@ GREY = "#c8c8c8"
 EDGE_COLORS = {"spectral": "#8c8c8c", "ion_identity": "#e6550d"}
 SELECTED_RING = "#de2d26"  # red
 MATCH_RING = "#1b9e77"  # green
-COLOR_OPTIONS = ["family", "community", "retention time", "intensity", "gap-filled values", "spectrum QC"]
+COLOR_OPTIONS = ["family", "community", "confidence level", "lipid class", "retention time", "intensity",
+                 "gap-filled values", "spectrum QC"]
+# Confidence levels: greens for identified structures, orange for tentative
+# candidates, pale for formula / m/z only (grey: not annotated).
+LEVEL_COLORS = {"1": "#006d2c", "2a": "#31a354", "2b": "#74c476", "3": "#fd8d3c", "4": "#fdd0a2", "5": "#bcbddc"}
 SAME_SIZE, MEAN_SIZE = "same size", "mean intensity"
-TABLE_COLUMNS = ["feature_id", "mz", "rt_min", "intensity", "ion", "family", "community",
-                 "n_ms2", "n_gap_filled", "qc"]
-TABLE_TITLES = {"feature_id": "feature", "mz": "m/z", "rt_min": "RT (min)", "n_ms2": "MS2 spectra",
-                "n_gap_filled": "gap-filled", "qc": "spectrum QC"}
+TABLE_COLUMNS = ["feature_id", "mz", "rt_min", "intensity", "ion", "annotation", "level", "lipid_class",
+                 "family", "community", "n_ms2", "n_gap_filled", "qc", "annotation_flags"]
+TABLE_TITLES = {"feature_id": "feature", "mz": "m/z", "rt_min": "RT (min)", "lipid_class": "lipid class",
+                "n_ms2": "MS2 spectra", "n_gap_filled": "gap-filled", "qc": "spectrum QC", "annotation_flags": "flags"}
 TABLE_FORMATS = {  # fixed decimals, no thousands separators: easier to read and to search
     "mz": NumberFormatter(format="0.0000", text_align="right"),
     "rt_min": NumberFormatter(format="0.00", text_align="right"),
     "intensity": NumberFormatter(format="0", text_align="right"),
 }
 HOVER = [("feature", "@feature_id"), ("m/z", "@mz{0.0000}"), ("RT (min)", "@rt_min{0.00}"),
-         ("family", "@family"), ("ion", "@ion")]
+         ("family", "@family"), ("ion", "@ion"), ("annotation", "@annotation_label")]
 
 
 # --------------------------------------------------------------------------
@@ -81,10 +85,21 @@ def gradient_colors(values: pd.Series) -> list[str]:
     return [Viridis256[int(v * 255)] for v in scaled]
 
 
+def category_colors(values: pd.Series) -> dict[str, str]:
+    """One glasbey colour per distinct non-empty value (e.g. lipid class), in sorted order."""
+    names = sorted(v for v in values.unique() if v)
+    return {name: glasbey_dark[i % len(glasbey_dark)] for i, name in enumerate(names)}
+
+
 def node_colors(nodes: pd.DataFrame, color_by: str) -> list[str]:
     """The colour of every node for the chosen "colour by" option."""
     if color_by in ("family", "community"):
         return group_colors(nodes[color_by])
+    if color_by == "confidence level":
+        return [LEVEL_COLORS.get(level, GREY) for level in nodes["level"]]
+    if color_by == "lipid class":
+        colors = category_colors(nodes["lipid_class"])
+        return [colors.get(name, GREY) for name in nodes["lipid_class"]]
     if color_by == "retention time":
         return gradient_colors(nodes["rt"])
     if color_by == "intensity":
@@ -177,6 +192,22 @@ class NetworkTab(param.Parameterized):
 
     # ---- network ----
 
+    @param.depends("color_by")
+    def legend(self) -> pn.pane.HTML:
+        """Colour key of the categorical colourings (levels, lipid classes)."""
+        if self.color_by == "confidence level":
+            used = set(self.nodes["level"])
+            items = [(f"L{level}", color) for level, color in LEVEL_COLORS.items() if level in used]
+        elif self.color_by == "lipid class":
+            items = list(category_colors(self.nodes["lipid_class"]).items())
+        else:
+            return pn.pane.HTML("")
+        items.append(("not annotated", GREY))
+        chips = "".join(f'<span style="margin-right:12px;white-space:nowrap"><span style="display:inline-block;'
+                        f'width:11px;height:11px;border-radius:50%;background:{color};margin-right:4px"></span>'
+                        f'{name}</span>' for name, color in items)
+        return pn.pane.HTML(f'<div style="font-size:12px;line-height:1.8">{chips}</div>', sizing_mode="stretch_width")
+
     def _edges(self) -> hv.Segments:
         position = self.nodes.set_index("feature_id")[["x", "y"]]
         edges = self.results.edges[self.results.edges["source"].isin(position.index)
@@ -205,7 +236,8 @@ class NetworkTab(param.Parameterized):
 
     def _points(self, color_by: str, size_by: str) -> hv.Points:
         data = self.nodes.assign(color=node_colors(self.nodes, color_by), radius=self._radii(size_by))
-        return hv.Points(data, ["x", "y"], ["feature_id", "mz", "rt_min", "family", "ion", "color", "radius"]).opts(
+        vdims = ["feature_id", "mz", "rt_min", "family", "ion", "annotation_label", "color", "radius"]
+        return hv.Points(data, ["x", "y"], vdims).opts(
             # No outline and no dimming of unselected nodes: full colours
             # (the selection is shown by red rings instead).
             color="color", radius="radius", line_alpha=0, nonselection_alpha=1.0,
@@ -230,10 +262,16 @@ class NetworkTab(param.Parameterized):
         selection.param.watch(self._network_selection, "index")
         matches = hv.DynamicMap(pn.bind(self._rings, self.param.matched, self.param.size_by, MATCH_RING, 0.15))
         selected = hv.DynamicMap(pn.bind(self._rings, self.param.selected, self.param.size_by, SELECTED_RING, 0.4))
+        # Initial view: every node in full. Bokeh's automatic ranges only
+        # see the node centres, and would cut the edge nodes in half.
+        margin = MAX_RADIUS + 1.0
+        xlim = (self.nodes["x"].min() - margin, self.nodes["x"].max() + margin)
+        ylim = (self.nodes["y"].min() - margin, self.nodes["y"].max() + margin)
         overlay = (self._edges() * points * matches * selected).opts(
             # data_aspect=1 keeps the layout undistorted (round nodes, true distances).
             hv.opts.Overlay(xaxis=None, yaxis=None, responsive=True, min_height=650, data_aspect=1,
-                            active_tools=["wheel_zoom"], title="Molecular network (scroll to zoom)"))
+                            xlim=xlim, ylim=ylim, active_tools=["wheel_zoom"],
+                            title="Molecular network (scroll to zoom)"))
         return pn.pane.HoloViews(overlay, sizing_mode="stretch_width", min_height=650)
 
     # ---- fragment search ----
@@ -303,6 +341,8 @@ class NetworkTab(param.Parameterized):
             text += f", {feature['ion']}"
         if pd.notna(feature.get("family")) and feature["family"] > 0:
             text += f", family {int(feature['family'])}"
+        if feature["annotation_label"]:
+            text += f"<br>**{feature['annotation_label']}**"
         plots = [pn.pane.Markdown(text)]
 
         spectra = self.results.spectra
@@ -331,6 +371,7 @@ class NetworkTab(param.Parameterized):
         mirror = pn.widgets.Checkbox.from_param(self.param.mirror, label="Mirror plot for two selected features")
         return pn.Column(
             self.controls,
+            self.legend,
             self.search_message,
             pn.Row(
                 pn.Column(self.network(), sizing_mode="stretch_width"),

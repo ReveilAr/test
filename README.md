@@ -7,10 +7,13 @@ is planned.
 > Working name, private project. Design: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 > Decisions and project rules: [`CLAUDE.md`](CLAUDE.md).
 
-**Status: milestones 1–2.** The pipeline goes from raw files to an aligned,
-gap-filled feature table, a GNPS FBMN export and a molecular network
-(modified cosine or MS2DeepScore). The app has Setup and Network tabs.
-Annotation and statistics come next.
+**Status: milestones 1–2, milestone 3 in progress.** The pipeline goes from
+raw files to an aligned, gap-filled feature table, a GNPS FBMN export, a
+molecular network (modified cosine or MS2DeepScore) and annotations with
+Schymanski confidence levels: spectral library search and rule-based lipid
+annotation, combined into one best annotation per feature. The app has
+Setup, Network and Annotation tabs. SIRIUS, MS2Query and statistics come
+next.
 
 ## Install (Linux)
 
@@ -52,7 +55,16 @@ or a row shows its MS2 spectrum and its chromatogram in every run, to the
 right of the network. Two selected features (shift-click, or ctrl-click in
 the table) give a mirror plot. The MS2 search circles the features whose
 spectrum holds given fragments or neutral losses. The feature table has a
-search box above every column.
+search box above every column, and shows each feature's best annotation
+and its confidence level (the network can be coloured by level or by lipid
+class). The **Annotation** tab lists every candidate of the selected
+feature, from every source, with its evidence: a mirror plot against the
+library spectrum, or the diagnostic lipid ions marked on the spectrum.
+
+**Spectral libraries** (MSP, MGF or GNPS JSON) are added in the Setup tab.
+Mark a library as *reference standards* only if its spectra were measured
+on your own method, with retention times: only those can give level 1.
+In-silico libraries (e.g. LipidBlast) give at most level 3.
 
 The first MS2DeepScore run downloads the pretrained model (about 130 MB)
 to `~/.cache/atlas-ms/models/`.
@@ -65,7 +77,8 @@ Results in `my_study/results/`:
 | `quant.parquet` | feature intensities, one column per sample |
 | `quant_gap_filled.parquet` | same shape, `True` where the value was re-extracted by gap filling (less precise than a detected value) |
 | `gnps/` | GNPS FBMN input in "OpenMS" format: `ms2_spectra.mgf`, `quantification_table.txt`, `metadata.tsv`, `iimn_supplementary_pairs.csv` |
-| `network/` | `nodes.parquet` (family, community, layout, spectrum QC), `edges.parquet` (spectral and adduct edges), `network.graphml` (open in Cytoscape) |
+| `network/` | `nodes.parquet` (family, community, layout, spectrum QC), `edges.parquet` (spectral and adduct edges), `network.graphml` (open in Cytoscape; with the best annotations) |
+| `annotations/` | `library.parquet`, `lipid_rules.parquet` (candidates of each source), `candidates.parquet` (all, with final levels), `best.parquet` (one best annotation per feature, flags, family class consensus) |
 
 Feature ids are the same everywhere. Features with MS2 are numbered first,
 so `feature_id` = GNPS `row ID` = MGF `SCANS`.

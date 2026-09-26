@@ -23,6 +23,12 @@ orbitrap:
     mz_window_ppm: 10.0
   scoring:
     fragment_tolerance_da: 0.01
+  library_search:
+    precursor_tolerance_ppm: 10.0
+    fragment_tolerance_da: 0.01
+  lipids:
+    precursor_tolerance_ppm: 5.0
+    fragment_tolerance_da: 0.01
 
 qtof:
   description: Q-TOF (Bruker, Agilent, Sciex, Waters) with UHPLC
@@ -38,4 +44,10 @@ qtof:
   gap_filling:
     mz_window_ppm: 20.0
   scoring:
+    fragment_tolerance_da: 0.02
+  library_search:
+    precursor_tolerance_ppm: 20.0
+    fragment_tolerance_da: 0.02
+  lipids:
+    precursor_tolerance_ppm: 10.0
     fragment_tolerance_da: 0.02

@@ -5,6 +5,9 @@ The Setup tab: sample metadata and processing parameters of the open project.
   metadata columns (saved as ATTRIBUTE_<name>, the GNPS convention).
 * Presets: copy an instrument or adduct preset into the parameters.
 * Adducts: polarity and the editable adduct list.
+* Spectral libraries: the MSP / MGF / JSON files to search, with their kind
+  (experimental or in-silico) and whether they are reference standards
+  measured on the same method (the only way to reach level 1).
 * Parameters: every section of ``atlas_ms.config``, as input boxes.
 
 Nothing is written until "Save" (or Run, which saves first). The files are
@@ -13,17 +16,20 @@ here rather than failing a run.
 """
 
 import re
+from pathlib import Path
 
 import pandas as pd
 import panel as pn
 import param
 
-from atlas_ms.config import SECTIONS, AdductSettings, load_presets
+from atlas_ms.config import LIBRARY_KINDS, SECTIONS, AdductSettings, load_presets
 from atlas_ms.project import SAMPLE_TYPES, Project
 
 # Sections shown as plain parameter boxes (presets and adducts have their own widgets).
 PARAMETER_SECTIONS = [name for name in SECTIONS if name not in ("presets", "adducts")]
 TITLES = {"spectrum_qc": "Spectrum QC"}  # card titles that differ from the capitalised section name
+HIDDEN = {"name", "libraries"}  # parameters with their own editor (libraries: the library table)
+LIBRARY_COLUMNS = ["name", "path", "kind", "reference_standards", "rt_unit", "rt_tolerance_s"]
 
 # Widget used for each kind of parameter: input boxes rather than sliders,
 # so exact values (e.g. 10000.0) are easy to type.
@@ -91,6 +97,23 @@ class SetupTab:
         add_adduct.on_click(self._add_adduct)
         remove_adducts.on_click(self._remove_adducts)
 
+        # ---- spectral libraries ----
+        self.libraries = pn.widgets.Tabulator(
+            pd.DataFrame([self.config.library_search.library(lib["name"]) for lib in self.config.library_search.libraries],
+                         columns=LIBRARY_COLUMNS),
+            show_index=False, sizing_mode="stretch_width", selectable=True,
+            titles={"reference_standards": "reference standards", "rt_unit": "library RT unit",
+                    "rt_tolerance_s": "RT tolerance (s)"},
+            editors={"kind": {"type": "list", "values": list(LIBRARY_KINDS)},
+                     "reference_standards": {"type": "tickCross"},
+                     "rt_unit": {"type": "list", "values": ["min", "s"]}},
+            formatters={"reference_standards": {"type": "tickCross"}},
+        )
+        add_library = pn.widgets.Button(label="Add library", width=110)
+        remove_libraries = pn.widgets.Button(label="Remove selected", width=140)
+        add_library.on_click(self._add_library)
+        remove_libraries.on_click(self._remove_libraries)
+
         save = pn.widgets.Button(label="Save", color="primary", width=120)
         save.on_click(lambda event: self.save())
 
@@ -108,6 +131,11 @@ class SetupTab:
             self.polarity,
             self.adducts,
             pn.Row(add_adduct, remove_adducts),
+            pn.pane.Markdown("### Spectral libraries\n"
+                             "MSP, MGF or GNPS JSON files (full paths). Only libraries of reference standards "
+                             "measured on your method, with retention times, can give level 1."),
+            self.libraries,
+            pn.Row(add_library, remove_libraries),
             pn.pane.Markdown("### Parameters"),
             self._cards,
             save,
@@ -118,8 +146,9 @@ class SetupTab:
         cards = []
         for name in PARAMETER_SECTIONS:
             section = getattr(self.config, name)
+            parameters = [name for name in section.param if name not in HIDDEN]
             cards.append(pn.Card(
-                pn.Param(section, widgets=widgets_for(section), show_name=False),
+                pn.Param(section, parameters=parameters, widgets=widgets_for(section), show_name=False),
                 title=TITLES.get(name, name.replace("_", " ").capitalize()), collapsed=True,
                 sizing_mode="stretch_width",
             ))
@@ -156,6 +185,27 @@ class SetupTab:
         self.adducts.value = self.adducts.value.drop(index=self.adducts.selection).reset_index(drop=True)
         self.adducts.selection = []
 
+    def _add_library(self, event) -> None:
+        row = pd.DataFrame([{"name": f"library_{len(self.libraries.value) + 1}", "path": "", "kind": "experimental",
+                             "reference_standards": False, "rt_unit": "min", "rt_tolerance_s": 10.0}])
+        self.libraries.value = pd.concat([self.libraries.value, row], ignore_index=True)
+
+    def _remove_libraries(self, event) -> None:
+        self.libraries.value = self.libraries.value.drop(index=self.libraries.selection).reset_index(drop=True)
+        self.libraries.selection = []
+
+    def _library_entries(self) -> list[dict]:
+        """The library table as settings entries; the files must exist."""
+        entries = []
+        for row in self.libraries.value.to_dict("records"):
+            path = Path(str(row["path"])).expanduser()
+            if not path.is_file():
+                raise ValueError(f"Library '{row['name']}': file not found: '{row['path']}'")
+            entries.append({"name": str(row["name"]).strip(), "path": str(path.resolve()), "kind": row["kind"],
+                            "reference_standards": bool(row["reference_standards"]), "rt_unit": row["rt_unit"],
+                            "rt_tolerance_s": float(row["rt_tolerance_s"])})
+        return entries
+
     def save(self) -> bool:
         """Validate and write samples.tsv and project.yaml. Returns False on errors."""
         try:
@@ -164,6 +214,9 @@ class SetupTab:
                 adducts=[{"name": r["name"], "openms": r["openms"], "probability": float(r["probability"])}
                          for r in self.adducts.value.to_dict("records")],
             )
+            # The section object stays (its parameter card is bound to it): set and check the list.
+            self.config.library_search.libraries = self._library_entries()
+            self.config.library_search.check_libraries()
             self.project.save_samples(self.samples.value)
             self.project.save_config(self.config)
         except (ValueError, KeyError) as error:

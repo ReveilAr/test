@@ -8,6 +8,8 @@ The ATLAS-MS app: one page with a sidebar (project, run) and tabs.
 * Setup tab: sample metadata and parameters (``setup_view``).
 * Network tab: molecular network, feature list, spectrum and chromatograms
   (``network_view``), once the pipeline has produced results.
+* Annotation tab: every annotation candidate of the selected feature and
+  its evidence (``annotation_view``).
 
 One project is open at a time. Opening another one rebuilds the page.
 """
@@ -17,6 +19,7 @@ from pathlib import Path
 
 import panel as pn
 
+from atlas_ms.app.annotation_view import AnnotationTab
 from atlas_ms.app.data import ChromatogramReader, load_results
 from atlas_ms.app.network_view import NetworkTab
 from atlas_ms.app.run_view import RunPanel
@@ -95,7 +98,9 @@ class AtlasApp:
             reader = ChromatogramReader(self.project, list(self.project.load_samples().index))
             tolerance = self.setup.config.scoring.fragment_tolerance_da
             self.network = NetworkTab(results, reader, fragment_tolerance=tolerance)
+            self.annotation = AnnotationTab(results, self.network)
             tabs.append(("Network", self.network.view()))
+            tabs.append(("Annotation", self.annotation.view()))
         else:
             tabs.append(("Network", pn.pane.Markdown("No results yet: press **Run** in the sidebar.")))
         self.tabs = pn.Tabs(*tabs, sizing_mode="stretch_width", dynamic=True)

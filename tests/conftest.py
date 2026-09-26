@@ -10,7 +10,7 @@ from atlas_ms.project import Project
 from atlas_ms.runner import WORKFLOW_DIR
 
 sys.path.insert(0, str(Path(__file__).parent))
-from synthetic import write_study  # noqa: E402
+from synthetic import IN_SILICO, STANDARDS, write_msp, write_study  # noqa: E402
 
 
 def snakemake(project_root: Path, *args: str) -> subprocess.CompletedProcess:
@@ -48,6 +48,14 @@ def processed_project(tmp_path_factory, study_files) -> Project:
     config = project.load_config()
     config.spectrum_qc.min_peaks = 2
     config.network.min_matched_peaks = 2
+    config.library_search.min_matched_peaks = 2
+    # Two small libraries (see synthetic.STANDARDS and IN_SILICO).
+    libraries = tmp_path_factory.mktemp("libraries")
+    config.library_search.libraries = [
+        {"name": "standards", "path": str(write_msp(libraries / "standards.msp", STANDARDS)),
+         "kind": "experimental", "reference_standards": True, "rt_unit": "min", "rt_tolerance_s": 10.0},
+        {"name": "insilico", "path": str(write_msp(libraries / "insilico.msp", IN_SILICO)), "kind": "in_silico"},
+    ]
     project.save_config(config)
     samples = project.load_samples()
     samples["ATTRIBUTE_group"] = ["ctrl", "ctrl", "treat", "treat"]

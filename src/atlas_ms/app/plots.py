@@ -12,6 +12,8 @@ pyopenms-viz draws the plots. Two things are handled here on top of it:
   (e.g. 6.0e+5).
 """
 
+import math
+
 import numpy as np
 import pandas as pd
 from bokeh.models import BasicTickFormatter, Label, Span
@@ -24,6 +26,7 @@ FONTS = {  # compact text for plots shown side by side
     "yaxis_tick_font_size": 10,
 }
 HEIGHT = 300
+MARK_COLOR = "#c51b8a"  # the app's accent colour
 # Minimum m/z distance between two labels, as a fraction of the plotted m/z
 # range: a label ("760.5851" at 8 pt) is about 45 px wide, and a plot in the
 # app's side column about 480 px, so labels closer than ~10% would overlap.
@@ -70,8 +73,12 @@ def _finish(figure):
     return figure
 
 
-def spectrum_plot(mz: np.ndarray, intensity: np.ndarray, title: str = "MS2 spectrum"):
-    """One MS2 spectrum, absolute intensities."""
+def spectrum_plot(mz: np.ndarray, intensity: np.ndarray, title: str = "MS2 spectrum", marks=()):
+    """
+    One MS2 spectrum, absolute intensities. ``marks`` are (m/z, text) pairs
+    drawn as dashed lines with vertical text, e.g. the diagnostic ions that
+    support a lipid annotation.
+    """
     peaks = pd.DataFrame({"mz": mz, "intensity": intensity})
     figure = peaks.plot(
         kind="spectrum", x="mz", y="intensity", backend="ms_bokeh", show_plot=False,
@@ -79,6 +86,11 @@ def spectrum_plot(mz: np.ndarray, intensity: np.ndarray, title: str = "MS2 spect
     )
     figure.yaxis.formatter = BasicTickFormatter(precision=1)  # 6.0e+5
     _add_labels(figure, peaks["mz"].to_numpy(), peaks["intensity"].to_numpy(), np.ptp(mz) if len(mz) else 0.0)
+    for position, text in marks:
+        figure.add_layout(Span(location=position, dimension="height", line_dash="dashed",
+                               line_color=MARK_COLOR, line_width=1.5))
+        figure.add_layout(Label(x=position, y=0, angle=math.pi / 2, text=text, text_font_size="8pt",
+                                text_color=MARK_COLOR, x_offset=-3, y_offset=4))
     return _finish(figure)
 
 

@@ -2,19 +2,19 @@
 Reading a processed project for the app.
 
 Everything here is quick to load: Parquet tables, and the MGF read with a
-small parser (matchms would add about 10 s to the app start). Chromatograms
+small parser (``atlas_ms.mgf``; matchms would add about 10 s to the app start). Chromatograms
 are not stored by the pipeline: they are extracted from the mzML files when a
 feature is selected (``ChromatogramReader``).
 """
 
 import math
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pyopenms as oms
 
+from atlas_ms.mgf import read_mgf
 from atlas_ms.preprocessing.msdata import load_trafo
 from atlas_ms.project import Project
 
@@ -23,34 +23,21 @@ from atlas_ms.project import Project
 class Results:
     """The results of a project, as the app uses them."""
 
-    features: pd.DataFrame  # features.parquet + network columns (NaN for features without MS2)
+    features: pd.DataFrame  # features.parquet + network columns (NaN for features without MS2) + best annotation
     quant: pd.DataFrame  # intensities, indexed by feature_id, one column per sample
     gap_filled: pd.DataFrame | None  # same shape as quant, True where gap-filled
     edges: pd.DataFrame  # network edges (empty before the network exists)
     spectra: dict[int, tuple[np.ndarray, np.ndarray]]  # feature_id -> (m/z, intensity) of its MS2
+    candidates: pd.DataFrame  # every annotation candidate (annotations/candidates.parquet; empty before)
 
 
-def read_mgf(path: str | Path) -> dict[int, tuple[np.ndarray, np.ndarray]]:
-    """
-    Read an MGF file into feature_id (the SCANS field) -> (m/z, intensity).
-    The format is simple: BEGIN IONS, KEY=value lines, "m/z intensity" lines, END IONS.
-    """
-    spectra, scans, peaks = {}, None, []
-    with open(path) as handle:
-        for line in handle:
-            line = line.strip()
-            if line == "BEGIN IONS":
-                scans, peaks = None, []
-            elif line == "END IONS":
-                if scans is not None:
-                    array = np.array(peaks, dtype=float).reshape(-1, 2)
-                    spectra[scans] = (array[:, 0], array[:, 1])
-            elif line.startswith("SCANS="):
-                scans = int(line.split("=", 1)[1])
-            elif line and line[0].isdigit():
-                mz, intensity = line.split()[:2]
-                peaks.append((float(mz), float(intensity)))
-    return spectra
+# Best-annotation columns (annotations/best.parquet) added to the feature
+# table, renamed where the name alone would be unclear.
+BEST_COLUMNS = {
+    "name": "annotation", "level": "level", "label": "annotation_label", "source": "annotation_source",
+    "lipid_class": "lipid_class", "lipid_name": "lipid_name", "lipid_level": "lipid_level",
+    "flags": "annotation_flags", "family_class": "family_class", "family_class_score": "family_class_score",
+}
 
 
 def load_results(project: Project) -> Results | None:
@@ -62,6 +49,16 @@ def load_results(project: Project) -> Results | None:
     nodes_file = results / "network" / "nodes.parquet"
     if nodes_file.exists():
         features = features.merge(pd.read_parquet(nodes_file), on="feature_id", how="left")
+    best_file = results / "annotations" / "best.parquet"
+    if best_file.exists():
+        best = pd.read_parquet(best_file)[["feature_id", *BEST_COLUMNS]].rename(columns=BEST_COLUMNS)
+        features = features.merge(best, on="feature_id", how="left")
+    else:  # not annotated yet
+        features = features.assign(**{column: np.nan for column in BEST_COLUMNS.values()})
+    # Text columns: "" rather than missing, so tables and tooltips show blanks.
+    text = [column for column in BEST_COLUMNS.values() if column != "family_class_score"]
+    features[text] = features[text].fillna("").astype(str)
+    candidates_file = results / "annotations" / "candidates.parquet"
     edges_file = results / "network" / "edges.parquet"
     edges = pd.read_parquet(edges_file) if edges_file.exists() else pd.DataFrame(
         columns=["source", "target", "edge_type", "score", "matched_peaks", "mz_delta"])
@@ -73,6 +70,7 @@ def load_results(project: Project) -> Results | None:
         gap_filled=pd.read_parquet(gap_filled_file).set_index("feature_id") if gap_filled_file.exists() else None,
         edges=edges,
         spectra=read_mgf(mgf) if mgf.exists() else {},
+        candidates=pd.read_parquet(candidates_file) if candidates_file.exists() else pd.DataFrame(),
     )
 
 

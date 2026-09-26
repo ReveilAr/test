@@ -188,3 +188,56 @@ def write_study(directory: str | Path) -> list[Path]:
                    seed=seed, empty_ms2=empty)
         for name, shift, factors, empty, seed in runs
     ]
+
+
+@dataclass
+class LibraryEntry:
+    """One spectrum of a synthetic spectral library (MSP format)."""
+
+    name: str
+    precursor_mz: float
+    adduct: str
+    formula: str
+    peaks: list[tuple[float, float]]  # (m/z, intensity)
+    rt_min: float | None = None  # retention time (minutes), for reference standards
+    ionmode: str = "Positive"
+
+
+# A library of "reference standards" measured on the same method (with
+# retention times), and an in-silico library, for the library search tests:
+#
+# * PC 34:1 [M+H]+: same spectrum and retention time as the study -> level 1;
+# * SM 34:1;O2 [M+H]+: no retention time -> level 2a;
+# * Cer 34:1;O2 [M+H]+: retention time 5.0 min instead of 3.33 -> level 2a;
+# * PC 34:1 [M+HCOO]- (negative mode): must be skipped;
+# * TG 16:0_18:1_18:1 [M+NH4]+ (predicted spectrum) -> level 3.
+STANDARDS = [
+    LibraryEntry("PC 16:0_18:1", 760.5851, "[M+H]+", "C42H82NO8P",
+                 [(104.1070, 5.0), (184.0733, 100.0), (577.5190, 3.0)], rt_min=3.0),
+    LibraryEntry("SM 18:1;O2/16:0", 703.5748, "[M+H]+", "C39H79N2O6P",
+                 [(184.0733, 100.0), (264.2686, 8.0), (520.5088, 5.0)]),
+    LibraryEntry("Cer 18:1;O2/16:0", 538.5194, "[M+H]+", "C34H67NO3",
+                 [(264.2686, 100.0), (282.2791, 30.0), (520.5088, 40.0)], rt_min=5.0),
+    LibraryEntry("PC 16:0_18:1", 804.5760, "[M+HCOO]-", "C42H82NO8P",
+                 [(255.2330, 100.0), (281.2486, 80.0), (744.5549, 20.0)], rt_min=3.0, ionmode="Negative"),
+]
+IN_SILICO = [
+    LibraryEntry("TG 16:0_18:1_18:1", 876.8014, "[M+NH4]+", "C55H102O6",
+                 [(577.5190, 100.0), (603.5347, 80.0), (859.7749, 5.0)]),
+]
+
+
+def write_msp(path: str | Path, entries: list[LibraryEntry]) -> Path:
+    """Write library entries as an MSP file (the NIST text format)."""
+    lines = []
+    for entry in entries:
+        lines += [f"NAME: {entry.name}", f"PRECURSORMZ: {entry.precursor_mz}", f"PRECURSORTYPE: {entry.adduct}",
+                  f"FORMULA: {entry.formula}", f"IONMODE: {entry.ionmode}"]
+        if entry.rt_min is not None:
+            lines.append(f"RETENTIONTIME: {entry.rt_min}")
+        lines.append(f"Num Peaks: {len(entry.peaks)}")
+        lines += [f"{mz}\t{intensity}" for mz, intensity in entry.peaks]
+        lines.append("")
+    path = Path(path)
+    path.write_text("\n".join(lines) + "\n")
+    return path

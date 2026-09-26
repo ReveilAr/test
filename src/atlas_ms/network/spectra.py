@@ -54,7 +54,16 @@ def clean_spectrum(spectrum: Spectrum, polarity: str, settings: SpectrumQCSettin
     """
     spectrum = msfilters.default_filters(spectrum)
     spectrum.set("ionmode", polarity)
-    spectrum = msfilters.remove_peaks_around_precursor_mz(spectrum, mz_tolerance=settings.precursor_window_da)
+    return clean_peaks(spectrum, settings.precursor_window_da)
+
+
+def clean_peaks(spectrum: Spectrum, precursor_window_da: float) -> Spectrum:
+    """
+    Remove the fragments within ``precursor_window_da`` of the precursor and
+    normalise intensities to the base peak. Library spectra get the same
+    treatment (``annotation.libraries``), so both sides compare alike.
+    """
+    spectrum = msfilters.remove_peaks_around_precursor_mz(spectrum, mz_tolerance=precursor_window_da)
     return msfilters.normalize_intensities(spectrum)
 
 

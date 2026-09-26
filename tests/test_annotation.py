@@ -1,0 +1,186 @@
+"""Annotation: library search, lipid rules and harmonization, on the synthetic study."""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from atlas_ms.annotation.harmonize import harmonize
+from atlas_ms.annotation.lipids import (
+    annotate_feature, combine_chains, load_rules, parse_lipid, rules_path, species_table,
+)
+from atlas_ms.annotation.schema import candidate_table
+from atlas_ms.config import HarmonizationSettings, LipidSettings
+from test_workflow import feature_of
+
+
+def annotations(project, name: str) -> pd.DataFrame:
+    return pd.read_parquet(project.results_dir / "annotations" / f"{name}.parquet")
+
+
+# ---- Lipid rules -------------------------------------------------------------
+
+def test_species_formulas_agree_with_goslin():
+    """Every class's species formulas, derived from its reference, match Goslin's."""
+    from pygoslin.parser.Parser import LipidParser
+
+    parser = LipidParser()
+    species = species_table(load_rules(rules_path()))
+    # Per class: the smallest, the largest and the most unsaturated species.
+    for _, group in species[species["adduct"] == species.groupby("lipid_class")["adduct"].transform("first")].groupby("lipid_class"):
+        for _, row in group.iloc[[0, -1, group["double_bonds"].argmax()]].iterrows():
+            try:
+                expected = parser.parse(row["name"]).get_sum_formula()
+            except Exception:  # classes Goslin does not know (OL, DGTS)
+                continue
+            assert row["formula"] == expected, row["name"]
+    # Ion m/z: PC 34:1 [M+H]+ and TG 52:2 [M+NH4]+ of the synthetic study.
+    pc = species[(species["name"] == "PC 34:1") & (species["adduct"] == "[M+H]+")]
+    tg = species[(species["name"] == "TG 52:2") & (species["adduct"] == "[M+NH4]+")]
+    assert pc["mz"].iloc[0] == pytest.approx(760.5851, abs=1e-4)
+    assert tg["mz"].iloc[0] == pytest.approx(876.8014, abs=1e-4)
+
+
+def test_chain_combinations():
+    # TG 52:2 with losses of 16:0 and 18:1: only 16:0_18:1_18:1 uses both.
+    assert combine_chains([(16, 0), (18, 1)], 3, (52, 2)) == [(16, 0), (18, 1), (18, 1)]
+    # TG 54:5 with losses of 16:0 and 18:1: the third chain (unseen) is 20:4.
+    assert combine_chains([(16, 0), (18, 1)], 3, (54, 5)) == [(16, 0), (18, 1), (20, 4)]
+    # TG 52:2 with four losses: several compositions fit, so none is chosen.
+    assert combine_chains([(16, 0), (18, 0), (18, 1), (18, 2)], 3, (52, 2)) is None
+
+
+def test_isobars_are_separated_by_their_headgroup():
+    """PC 34:1 and PE 37:1 [M+H]+ have the same formula: the fragments decide."""
+    rules = load_rules(rules_path())
+    species = species_table(rules)
+
+    def best(fragments):
+        mz = np.array(sorted(fragments))
+        rows = annotate_feature(1, 760.5851, (mz, np.ones_like(mz)), species, rules, LipidSettings())
+        return rows[0]["name"], rows[0]["proposed_level"]
+
+    assert best([184.0733, 104.1070]) == ("PC 34:1", "3")
+    assert best([760.5851 - 141.0191]) == ("PE 37:1", "3")
+    name, level = best([300.0])  # no class evidence: m/z suggestions only
+    assert level == "5"
+
+
+def test_lipid_rules_on_the_study(processed_project):
+    features = pd.read_parquet(processed_project.results_dir / "features.parquet")
+    table = annotations(processed_project, "lipid_rules")
+    best = table[table["rank"] == 1].set_index("feature_id")
+    expected = {
+        "PC 34:1 [M+H]+": ("PC 34:1", "[M+H]+", "species", "3"),
+        "PC 34:1 [M+Na]+": ("PC 34:1", "[M+Na]+", "species", "3"),
+        "SM 34:1;O2 [M+H]+": ("SM 18:1;O2/16:0", "[M+H]+", "sn-position", "3"),
+        "LPC 16:0 [M+H]+": ("LPC 16:0", "[M+H]+", "molecular species", "3"),
+        "Cer 34:1;O2 [M+H]+": ("Cer 18:1;O2/16:0", "[M+H]+", "sn-position", "3"),
+        "TG 52:2 [M+NH4]+": ("TG 16:0_18:1_18:1", "[M+NH4]+", "molecular species", "3"),
+        "CE 18:1 [M+NH4]+": ("CE 18:1", "[M+NH4]+", "molecular species", "3"),
+        # No MS2 spectrum: m/z suggestion only.
+        "DG 34:1 [M+NH4]+": ("DG 34:1", "[M+NH4]+", "species", "5"),
+    }
+    for compound, values in expected.items():
+        row = best.loc[feature_of(features, compound)["feature_id"]]
+        assert (row["name"], row["adduct"], row["lipid_level"], row["proposed_level"]) == values, compound
+
+
+def test_lipid_names_from_any_source():
+    assert parse_lipid("PC(16:0/18:1(9Z))") | {} == {
+        "name": "PC 16:0/18:1(9Z)", "species": "PC 34:1", "lipid_class": "PC", "level": "full structure"}
+    assert parse_lipid("CE 18:1")["lipid_class"] == "CE"
+    assert parse_lipid("PC O-34:1")["lipid_class"] == "PC-O"
+    assert parse_lipid("OL 34:1")["lipid_class"] == "OL"  # unknown to Goslin, read directly
+    assert parse_lipid("Caffeine") is None
+
+
+# ---- Library search -----------------------------------------------------------
+
+def test_library_search_levels(processed_project):
+    features = pd.read_parquet(processed_project.results_dir / "features.parquet")
+    table = annotations(processed_project, "library").set_index("feature_id")
+
+    def hit(compound):
+        return table.loc[feature_of(features, compound)["feature_id"]]
+
+    # Reference standard, same spectrum and retention time: level 1.
+    pc = hit("PC 34:1 [M+H]+")
+    assert (pc["source"], pc["name"], pc["proposed_level"]) == ("library:standards", "PC 16:0_18:1", "1")
+    assert pc["score"] == pytest.approx(1.0, abs=1e-3) and pc["matched_peaks"] == 3
+    assert abs(pc["rt_error_s"]) <= 10
+    # Standard without retention time, or with the wrong one: level 2a.
+    assert hit("SM 34:1;O2 [M+H]+")["proposed_level"] == "2a"
+    cer = hit("Cer 34:1;O2 [M+H]+")
+    assert cer["proposed_level"] == "2a" and cer["rt_error_s"] == pytest.approx(200 - 300, abs=5)
+    # In-silico spectrum: level 3.
+    tg = hit("TG 52:2 [M+NH4]+")
+    assert (tg["source"], tg["library_kind"], tg["proposed_level"]) == ("library:insilico", "in_silico", "3")
+    # The negative-mode spectrum of the standards library was skipped.
+    prepared = pd.read_parquet(processed_project.root / "work" / "annotation" / "libraries" / "standards.parquet")
+    assert len(prepared) == 3
+    # Library spectra are kept for mirror plots.
+    assert 184.0733 == pytest.approx(max(pc["reference_mz"], key=lambda mz: -abs(mz - 184.07)), abs=1e-4)
+
+
+# ---- Harmonization ------------------------------------------------------------
+
+def test_best_annotations_of_the_study(processed_project):
+    features = pd.read_parquet(processed_project.results_dir / "features.parquet")
+    best = annotations(processed_project, "best").set_index("feature_id")
+    assert len(best) == len(features)  # one row per feature, annotated or not
+
+    def label(compound):
+        return best.loc[feature_of(features, compound)["feature_id"], "label"]
+
+    assert label("PC 34:1 [M+H]+") == "L1 · PC 16:0_18:1 (molecular species)"
+    assert label("Cer 34:1;O2 [M+H]+") == "L2a · Cer 18:1;O2/16:0 (sn-position)"
+    assert label("TG 52:2 [M+NH4]+") == "L3 · TG 16:0_18:1_18:1 (molecular species)"
+    assert label("DG 34:1 [M+NH4]+") == "L5 · DG 34:1 (species)"
+    # The phosphocholine family (PC, SM, LPC...): consensus class PC.
+    pc = best.loc[feature_of(features, "PC 34:1 [M+H]+")["feature_id"]]
+    assert pc["family_class"] == "PC" and 0 < pc["family_class_score"] <= 1
+
+
+def candidate(feature_id, source, name, level, **values):
+    return {"feature_id": feature_id, "source": source, "rank": 1, "name": name, "proposed_level": level,
+            "score": 0.9, "library_kind": "experimental" if source.startswith("library") else ""} | values
+
+
+def test_levels_are_capped_never_raised():
+    candidates = candidate_table([
+        candidate(1, "library:lipidblast", "PC 34:1", "2a", library_kind="in_silico"),  # in silico: 3
+        candidate(2, "library:standards", "SM 34:1;O2", "1"),  # level 1 without retention time: 2a
+        candidate(3, "sirius:csi", "PE 34:1", "2a"),  # CSI:FingerID: at most 3
+        candidate(4, "lipid_rules", "PG 34:1", "5"),  # a level is never raised
+    ])
+    features = pd.DataFrame({"feature_id": [1, 2, 3, 4], "rt": [60.0] * 4})
+    nodes = pd.DataFrame({"feature_id": [1, 2, 3, 4], "family": [-1] * 4, "qc": [""] * 4})
+    result, _ = harmonize(candidates, features, nodes, HarmonizationSettings())
+    assert result.set_index("feature_id")["level"].to_dict() == {1: "3", 2: "2a", 3: "3", 4: "5"}
+
+
+def test_flags_class_disagreement_and_rt_trend():
+    # Six PC species on a clean RT trend (RT rises 0.5 min per carbon, falls
+    # 0.4 min per double bond), one of them 2 min late. Feature 7: two
+    # sources disagree on its class. Feature 8 is a blank feature.
+    compositions = [(32, 0), (34, 1), (34, 2), (36, 1), (36, 2), (38, 4)]
+    rows, rt = [], {}
+    for feature_id, (c, d) in enumerate(compositions, start=1):
+        rows.append(candidate(feature_id, "lipid_rules", f"PC {c}:{d}", "3", lipid_class="PC"))
+        rt[feature_id] = 60 * (0.5 * c - 0.4 * d + (2.0 if feature_id == 4 else 0.0))
+    rows += [candidate(7, "lipid_rules", "PC 34:1", "3", lipid_class="PC"),
+             candidate(7, "library:std", "PE 37:1", "2a"),
+             candidate(8, "lipid_rules", "PG 34:1", "3", lipid_class="PG")]
+    rt |= {7: 1000.0, 8: 1000.0}
+    features = pd.DataFrame({"feature_id": list(rt), "rt": list(rt.values())})
+    nodes = pd.DataFrame({"feature_id": list(rt), "family": [1] * 6 + [-1, -1],
+                          "qc": [""] * 7 + ["present in blanks"]})
+    _, best = harmonize(candidate_table(rows), features, nodes, HarmonizationSettings())
+    flags = best.set_index("feature_id")["flags"]
+    assert flags[4] == "RT off class trend"
+    assert all(flags[i] == "" for i in (1, 2, 3, 5, 6))
+    assert "lipid class disagreement" in flags[7]
+    assert flags[8] == "blank"
+    # Family 1: six PC annotations, all agreeing.
+    family = best.set_index("feature_id").loc[1]
+    assert (family["family_class"], family["family_class_score"]) == ("PC", 1.0)

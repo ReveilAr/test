@@ -43,7 +43,7 @@ def test_chromatograms_follow_the_simulated_intensities(processed_project):
 
 def test_network_and_table_share_the_selection(processed_project):
     app = AtlasApp(str(processed_project.root))
-    assert [name for name in app.tabs._names] == ["Setup", "Network"]
+    assert [name for name in app.tabs._names] == ["Setup", "Network", "Annotation"]
     network = app.network
     features = network.table.value
     network.selected = [5]
@@ -152,3 +152,62 @@ def test_a_busy_port_is_skipped():
         busy.listen()
         port = busy.getsockname()[1]
         assert free_port(port) != port
+
+
+def test_annotation_tab_follows_the_selection(processed_project):
+    from atlas_ms.app.annotation_view import evidence_marks
+
+    app = AtlasApp(str(processed_project.root))
+    network, annotation = app.network, app.annotation
+    features = network.results.features
+    pc = int(feature_of(features, "PC 34:1 [M+H]+")["feature_id"])
+
+    # The network table shows the best annotation and its level.
+    row = network.table.value.set_index("feature_id").loc[pc]
+    assert (row["annotation"], row["level"], row["lipid_class"]) == ("PC 16:0_18:1", "1", "PC")
+
+    network.selected = [pc]
+    candidates = annotation.table.value
+    # Most confident first: the reference standard (L1), then the lipid rule (L3).
+    assert candidates[["level", "source"]].values.tolist()[:2] == [["1", "library:standards"], ["3", "lipid_rules"]]
+    assert annotation.table.selection == [0]
+    # Library hit: a mirror plot of the feature against the library spectrum.
+    plot = annotation.evidence(annotation.table.value, [0])
+    assert type(plot).__name__ == "Bokeh"
+    # Lipid rule: the spectrum with the diagnostic ions marked.
+    lipid_rule = annotation._rows.iloc[1]
+    assert [text for _, text in evidence_marks(lipid_rule["evidence"], 760.5851)] == ["184.0733", "104.1070"]
+    assert type(annotation.evidence(annotation.table.value, [1])).__name__ == "Bokeh"
+    assert "L1 · PC 16:0_18:1" in annotation.header(network.selected).object
+
+    # The family lists PC's family members; clicking one selects it everywhere.
+    members = annotation.family_table.value
+    lpc = int(feature_of(features, "LPC 16:0 [M+H]+")["feature_id"])
+    assert pc in set(members["feature_id"]) and lpc in set(members["feature_id"])
+    annotation.family_table.selection = [int(members.index[members["feature_id"] == lpc][0])]
+    assert network.selected == [lpc]
+    assert annotation.table.value["name"].iloc[0] == "LPC 16:0"
+
+
+def test_level_and_class_colours_have_a_legend(processed_project):
+    network = AtlasApp(str(processed_project.root)).network
+    network.color_by = "confidence level"
+    assert "L1" in network.legend().object and "not annotated" in network.legend().object
+    network.color_by = "lipid class"
+    assert "TG" in network.legend().object
+    network.color_by = "family"
+    assert network.legend().object == ""
+
+
+def test_setup_edits_the_library_list(project_copy, tmp_path):
+    setup = SetupTab(project_copy)
+    assert list(setup.libraries.value["name"]) == ["standards", "insilico"]
+    setup._add_library(None)
+    assert not setup.save()  # the new library has no file yet
+    library = tmp_path / "extra.mgf"
+    library.write_text("BEGIN IONS\nPEPMASS=500.0\n100.0 10.0\nEND IONS\n")
+    setup.libraries.value.loc[2, ["name", "path"]] = ["extra", str(library)]
+    assert setup.save()
+    saved = project_copy.load_config().library_search
+    assert [lib["name"] for lib in saved.libraries] == ["standards", "insilico", "extra"]
+    assert saved.library("extra")["path"] == str(library.resolve())

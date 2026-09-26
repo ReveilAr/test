@@ -13,7 +13,6 @@ run_network(
     samples_file=snakemake.input.samples,
     nodes_out=snakemake.output.nodes,
     edges_out=snakemake.output.edges,
-    graphml_out=snakemake.output.graphml,
     max_blank_ratio=snakemake.params.max_blank_ratio,
     settings=NetworkSettings(**snakemake.params.network),
 )

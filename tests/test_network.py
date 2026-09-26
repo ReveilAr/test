@@ -16,7 +16,7 @@ from atlas_ms.network.model_files import DEFAULT_MODEL_PATH
 from atlas_ms.network.scoring import candidate_edges, score_spectra
 from atlas_ms.network.spectra import load_spectra
 from conftest import snakemake
-from test_workflow import feature_of, planned_jobs
+from test_workflow import AFTER_NETWORK, feature_of, planned_jobs
 
 
 def tiny_model(path) -> str:
@@ -100,10 +100,12 @@ def test_network_of_the_synthetic_study(processed_project):
     }
     assert (spectral["score"] >= 0.7).all() and (spectral["matched_peaks"] >= 2).all()
 
-    # GraphML for Cytoscape, with the feature table as node attributes.
+    # GraphML for Cytoscape, with the feature table and the best annotation as node attributes.
     graph = nx.read_graphml(processed_project.results_dir / "network" / "network.graphml")
     assert graph.number_of_nodes() == len(nodes) and graph.number_of_edges() == len(network_edges)
-    assert "mz" in next(iter(graph.nodes(data=True)))[1]
+    pc = graph.nodes[str(ids["PC 34:1 [M+H]+"])]
+    assert pc["mz"] == pytest.approx(760.5851, abs=0.001)
+    assert pc["annotation"] == "PC 16:0_18:1" and pc["level"] == "1" and pc["lipid_class"] == "PC"
 
 
 def test_ms2deepscore_scoring(processed_project, tmp_path):
@@ -142,7 +144,7 @@ def test_ms2deepscore_through_the_workflow(processed_project, tmp_path):
     config["scoring"]["ms2deepscore_model"] = tiny_model(tmp_path / "tiny.pt")
     config["network"]["min_score"] = 0.3  # an untrained model's scores are arbitrary
     (root / "project.yaml").write_text(yaml.safe_dump(config))
-    assert planned_jobs(snakemake(root, "--dry-run")) == {"score_spectra": 1, "build_network": 1, "all": 1}
+    assert planned_jobs(snakemake(root, "--dry-run")) == {"score_spectra": 1, **AFTER_NETWORK}
     result = snakemake(root)
     assert result.returncode == 0, result.stderr[-3000:]
     assert (root / "results" / "network" / "nodes.parquet").exists()

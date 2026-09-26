@@ -16,6 +16,7 @@ copied into a project in one go: instrument presets set tolerances across
 several sections, adduct presets set the polarity and the adduct list.
 """
 
+import re
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -309,6 +310,123 @@ class NetworkSettings(Section):
     )
 
 
+LIBRARY_KINDS = ("experimental", "in_silico")
+
+
+class LibrarySearchSettings(Section):
+    """
+    Spectral library search (matchms): every feature's MS2 spectrum against
+    the library spectra whose precursor m/z is within tolerance (identity
+    search). Hits set the confidence level: 1 for reference standards with a
+    matching retention time, 2a for other experimental spectra, 3 for
+    in-silico (predicted) spectra.
+    """
+
+    libraries = param.List(
+        default=[], item_type=dict,
+        doc="Libraries as {name, path, kind, reference_standards, rt_unit, rt_tolerance_s} "
+            "(edited in the app's library table). kind: experimental or in_silico.",
+    )
+    precursor_tolerance_ppm = param.Number(
+        default=10.0, bounds=(0.1, 100.0),
+        doc="A library spectrum is a candidate when its precursor m/z is within this tolerance.",
+    )
+    fragment_tolerance_da = param.Number(
+        default=0.01, bounds=(0.0001, 1.0), doc="Tolerance (Da) when matching fragments.",
+    )
+    min_score = param.Number(
+        default=0.7, bounds=(0.0, 1.0), doc="Minimum cosine score of a library hit.",
+    )
+    min_matched_peaks = param.Integer(
+        default=3, bounds=(1, None),
+        doc="Minimum number of matched fragments of a library hit. Lipid spectra are "
+            "sparse, hence lower than the GNPS default (6).",
+    )
+    top_n = param.Integer(default=3, bounds=(1, None), doc="Hits kept per feature and library.")
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        self.check_libraries()
+
+    def check_libraries(self) -> None:
+        """Complete entries, known kinds and units, unique file-name-safe names."""
+        names = [library.get("name") for library in self.libraries]
+        if len(set(names)) != len(names):
+            raise ValueError(f"Library names must be unique: {names}")
+        for library in self.libraries:
+            missing = {"name", "path", "kind"} - set(library)
+            if missing:
+                raise ValueError(f"Library {library} is missing {sorted(missing)}")
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", str(library["name"])):
+                raise ValueError(f"Library name '{library['name']}': use letters, digits, '_' or '-' only")
+            if library["kind"] not in LIBRARY_KINDS:
+                raise ValueError(f"Library '{library['name']}': kind must be one of {LIBRARY_KINDS}")
+            if library.get("rt_unit", "min") not in ("min", "s"):
+                raise ValueError(f"Library '{library['name']}': rt_unit must be 'min' or 's'")
+
+    def library(self, name: str) -> dict:
+        """
+        One library's entry, with the optional keys filled in. Keys are
+        sorted: Snakemake compares rule parameters as text, and project.yaml
+        may store them in any order.
+        """
+        entry = next(library for library in self.libraries if library["name"] == name)
+        defaults = {"reference_standards": False, "rt_unit": "min", "rt_tolerance_s": 10.0}
+        return dict(sorted((defaults | entry).items()))
+
+
+class LipidSettings(Section):
+    """
+    Rule-based lipid annotation: class-specific fragments and neutral losses
+    (``atlas_ms/presets/lipid_rules.yaml``) plus the precursor m/z of every
+    species of the class. Gives the species level (e.g. PC 34:1), or the
+    chains (e.g. TG 16:0_18:1_18:1) when fragments reveal them.
+    """
+
+    enabled = param.Boolean(default=True)
+    rules_file = param.String(
+        default="",
+        doc="Your own rules (YAML, same format as atlas_ms/presets/lipid_rules.yaml). "
+            "Empty: the built-in rules.",
+    )
+    precursor_tolerance_ppm = param.Number(
+        default=5.0, bounds=(0.1, 100.0), doc="Precursor m/z tolerance (ppm) for a lipid species.",
+    )
+    fragment_tolerance_da = param.Number(
+        default=0.01, bounds=(0.0001, 1.0), doc="Tolerance (Da) for fragments and neutral losses.",
+    )
+    min_relative_intensity = param.Number(
+        default=0.01, bounds=(0.0, 1.0),
+        doc="Fragments weaker than this fraction of the base peak are ignored.",
+    )
+    mz_only_candidates = param.Boolean(
+        default=True,
+        doc="Also list the species matching the precursor m/z only, without fragment "
+            "evidence (level 5 suggestions; the only ones for features without MS2).",
+    )
+
+
+class HarmonizationSettings(Section):
+    """
+    Combination of all annotation sources: confidence levels (Schymanski),
+    flags, best annotation per feature, class consensus per family.
+    """
+
+    source_priority = param.List(
+        default=["library", "ms2query", "lipid_rules", "sirius"], item_type=str,
+        doc="Between candidates of the same level, the best comes from the first source in this list.",
+    )
+    rt_model_min_points = param.Integer(
+        default=5, bounds=(3, None),
+        doc="A lipid class needs this many confident annotations (level 3 or better) "
+            "before its retention-time trend (RT vs carbons and double bonds) is used.",
+    )
+    rt_outlier_min = param.Number(
+        default=0.5, bounds=(0.0, None),
+        doc="Annotations further than this (minutes) from their class's RT trend are flagged.",
+    )
+
+
 # --------------------------------------------------------------------------
 # All sections of a project
 # --------------------------------------------------------------------------
@@ -326,6 +444,9 @@ SECTIONS: dict[str, type[Section]] = {
     "spectrum_qc": SpectrumQCSettings,
     "scoring": ScoringSettings,
     "network": NetworkSettings,
+    "library_search": LibrarySearchSettings,
+    "lipids": LipidSettings,
+    "harmonization": HarmonizationSettings,
 }
 
 
@@ -346,6 +467,9 @@ class ProjectConfig:
     spectrum_qc: SpectrumQCSettings
     scoring: ScoringSettings
     network: NetworkSettings
+    library_search: LibrarySearchSettings
+    lipids: LipidSettings
+    harmonization: HarmonizationSettings
 
     def __init__(self, **sections: Section):
         unknown = set(sections) - set(SECTIONS)

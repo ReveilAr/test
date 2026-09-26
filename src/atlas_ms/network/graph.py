@@ -348,13 +348,13 @@ def run_network(
     samples_file: str | Path,
     nodes_out: str | Path,
     edges_out: str | Path,
-    graphml_out: str | Path,
     max_blank_ratio: float,
     settings: NetworkSettings,
 ) -> None:
     """
     File-level entry point: blank check, network construction, and the
-    nodes / edges tables and GraphML file. The nodes table also carries the
+    nodes / edges tables (the GraphML file is written after the annotation,
+    ``run_export_graphml``). The nodes table also carries the
     spectrum QC: n_peaks, blank_ratio, and ``qc`` (why a node has no spectral
     edges; empty when it may have them).
     """
@@ -375,7 +375,26 @@ def run_network(
 
     nodes.to_parquet(nodes_out, index=False)
     edges.to_parquet(edges_out, index=False)
-    to_graphml(nodes, edges, features, graphml_out)
+
+
+# Columns of the best annotation (annotations/best.parquet) added to the
+# GraphML nodes, and their attribute names there.
+GRAPHML_ANNOTATION = {
+    "name": "annotation", "level": "level", "label": "annotation_label", "source": "annotation_source",
+    "lipid_class": "lipid_class", "lipid_name": "lipid_name", "lipid_level": "lipid_level",
+    "flags": "annotation_flags", "family_class": "family_class", "family_class_score": "family_class_score",
+}
+
+
+def run_export_graphml(nodes_file, edges_file, features_file, best_file, out) -> None:
+    """
+    GraphML for Cytoscape: the network with the feature table and the best
+    annotation of each node (name, confidence level, lipid class, flags,
+    family class consensus) as node attributes.
+    """
+    best = pd.read_parquet(best_file)[["feature_id", *GRAPHML_ANNOTATION]].rename(columns=GRAPHML_ANNOTATION)
+    features = pd.read_parquet(features_file).merge(best, on="feature_id", how="left")
+    to_graphml(pd.read_parquet(nodes_file), pd.read_parquet(edges_file), features, out)
 
 
 def to_graphml(nodes: pd.DataFrame, edges: pd.DataFrame, features: pd.DataFrame, path) -> None:

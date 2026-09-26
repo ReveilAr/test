@@ -22,6 +22,8 @@ dependencies = [
     "ms2deepscore>=2.11,<3",
     "onnxruntime",  # imported by ms2deepscore 2.11 but not declared by it
     "networkx>=3.4",
+    # Annotation
+    "pygoslin>=2.2",  # lipid shorthand names (Goslin): classes, species, structural levels
     # App
     "panel>=1.9,<2",  # widget "label" / button "color" (1.9 names)
     "holoviews>=1.20",

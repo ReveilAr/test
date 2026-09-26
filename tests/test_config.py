@@ -58,3 +58,21 @@ def test_adduct_polarity_is_checked():
     config = ProjectConfig()
     config.apply_adduct_preset("negative_default")
     assert config.adducts.polarity == "negative"
+
+
+def test_library_entries_are_checked():
+    from atlas_ms.config import LibrarySearchSettings
+
+    good = {"name": "inhouse_std", "path": "/data/std.msp", "kind": "experimental", "reference_standards": True}
+    settings = LibrarySearchSettings(libraries=[good])
+    # Optional keys get their defaults.
+    assert settings.library("inhouse_std") == good | {"rt_unit": "min", "rt_tolerance_s": 10.0}
+    for wrong in (
+        [good, good],  # duplicate names
+        [good | {"kind": "predicted"}],  # unknown kind
+        [good | {"name": "my library"}],  # not usable in file names
+        [{"name": "x", "kind": "experimental"}],  # no path
+        [good | {"rt_unit": "hours"}],
+    ):
+        with pytest.raises(ValueError):
+            LibrarySearchSettings(libraries=wrong)

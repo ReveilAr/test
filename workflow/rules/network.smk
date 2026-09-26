@@ -55,7 +55,7 @@ rule score_spectra:
 
 
 rule build_network:
-    """Blank check, GNPS-style network, families, communities, layout, GraphML."""
+    """Blank check, GNPS-style network, families, communities, layout."""
     input:
         candidates="work/network/candidates.parquet",
         features=RESULTS["features"],
@@ -66,7 +66,6 @@ rule build_network:
     output:
         nodes=RESULTS["nodes"],
         edges=RESULTS["edges"],
-        graphml=RESULTS["graphml"],
     params:
         max_blank_ratio=CFG.spectrum_qc.max_blank_ratio,
         network=CFG.network.to_dict(),

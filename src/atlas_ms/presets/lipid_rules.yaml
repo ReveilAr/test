@@ -1,0 +1,308 @@
+# Lipid annotation rules, positive ion mode (atlas_ms/annotation/lipids.py).
+#
+# Copy this file and set `lipids.rules_file` in the project parameters to use
+# your own rules.
+#
+# One entry per lipid class:
+#
+#   name        species name template: {c} total carbons, {d} double bonds
+#               of the chains (e.g. "PC {c}:{d}", "Cer {c}:{d};O2").
+#   reference   one species of the class, [carbons, double bonds], and its
+#   formula     neutral formula. Every other species is derived from it: one
+#               more carbon adds CH2, one more double bond removes H2.
+#   carbons, double_bonds   ranges of the species generated.
+#   adducts     ions the class is annotated as, each with its evidence:
+#
+#     fragments / neutral_losses                    required: all must be found
+#     optional_fragments / optional_neutral_losses  raise the score only
+#     chains: how the fragments reveal the chains (molecular species):
+#       acyl_losses       fatty acid losses from the precursor ([M+Na]+ of glycerolipids)
+#       acyl_losses_nh3   fatty acid + NH3 losses ([M+NH4]+ of glycerolipids)
+#       sphingoid_base    long-chain base ions ([base+H-H2O]+, [base+H-2H2O]+);
+#                         the N-acyl chain is the rest
+#     chains_required: true when the chain evidence is the class evidence (DG, TG, Cer)
+#     dg_ions: true to require a diacylglycerol-like ion [DG+H-H2O]+ (cardiolipins)
+#
+# Fragment m/z and losses are monoisotopic, computed from the formulas given
+# in the comments. Sources: the diagnostic ions used by LipidBlast / MS-DIAL
+# and the lipidomics literature (positive mode).
+
+classes:
+
+  # ---- Glycerophosphocholines -------------------------------------------
+  PC:
+    name: "PC {c}:{d}"
+    reference: [34, 1]
+    formula: C42H82NO8P
+    carbons: [20, 48]
+    double_bonds: [0, 12]
+    adducts:
+      "[M+H]+":
+        fragments: [184.0733]              # phosphocholine ion C5H15NO4P+
+        optional_fragments: [104.1070]     # choline ion C5H14NO+
+      "[M+Na]+":
+        neutral_losses: [59.0735]          # trimethylamine C3H9N
+        optional_neutral_losses: [183.0660, 205.0480]  # phosphocholine; sodium cyclophosphane
+  PC-O:
+    name: "PC O-{c}:{d}"                   # ether (alkyl or alkenyl) PC
+    reference: [34, 1]
+    formula: C42H84NO7P
+    carbons: [28, 44]
+    double_bonds: [0, 8]
+    adducts:
+      "[M+H]+":
+        fragments: [184.0733]
+        optional_fragments: [104.1070]
+  LPC:
+    name: "LPC {c}:{d}"
+    reference: [16, 0]
+    formula: C24H50NO7P
+    carbons: [12, 26]
+    double_bonds: [0, 6]
+    adducts:
+      "[M+H]+":
+        fragments: [184.0733]
+        optional_fragments: [104.1070]
+      "[M+Na]+":
+        neutral_losses: [59.0735]
+        optional_neutral_losses: [205.0480]
+
+  # ---- Glycerophosphoethanolamines (and their methylated forms) ---------
+  PE:
+    name: "PE {c}:{d}"
+    reference: [34, 1]
+    formula: C39H76NO8P
+    carbons: [20, 48]
+    double_bonds: [0, 12]
+    adducts:
+      "[M+H]+":
+        neutral_losses: [141.0191]         # phosphoethanolamine C2H8NO4P
+      "[M+Na]+":
+        neutral_losses: [43.0422]          # aziridine C2H5N
+        optional_neutral_losses: [141.0191]
+  PE-O:
+    name: "PE O-{c}:{d}"
+    reference: [34, 1]
+    formula: C39H78NO7P
+    carbons: [28, 44]
+    double_bonds: [0, 8]
+    adducts:
+      "[M+H]+":
+        neutral_losses: [141.0191]
+  LPE:
+    name: "LPE {c}:{d}"
+    reference: [16, 0]
+    formula: C21H44NO7P
+    carbons: [12, 26]
+    double_bonds: [0, 6]
+    adducts:
+      "[M+H]+":
+        neutral_losses: [141.0191]
+  PE-NMe:                                  # monomethyl-PE (PME), bacterial
+    name: "PE-NMe {c}:{d}"
+    reference: [34, 1]
+    formula: C40H78NO8P
+    carbons: [24, 40]
+    double_bonds: [0, 4]
+    adducts:
+      "[M+H]+":
+        neutral_losses: [155.0348]         # C3H10NO4P
+  PE-NMe2:                                 # dimethyl-PE (PDME), bacterial
+    name: "PE-NMe2 {c}:{d}"
+    reference: [34, 1]
+    formula: C41H80NO8P
+    carbons: [24, 40]
+    double_bonds: [0, 4]
+    adducts:
+      "[M+H]+":
+        neutral_losses: [169.0504]         # C4H12NO4P
+
+  # ---- Other glycerophospholipids ----------------------------------------
+  PS:
+    name: "PS {c}:{d}"
+    reference: [34, 1]
+    formula: C40H76NO10P
+    carbons: [20, 48]
+    double_bonds: [0, 12]
+    adducts:
+      "[M+H]+":
+        neutral_losses: [185.0089]         # phosphoserine C3H8NO6P
+  PG:
+    name: "PG {c}:{d}"
+    reference: [34, 1]
+    formula: C40H77O10P
+    carbons: [20, 48]
+    double_bonds: [0, 12]
+    adducts:
+      "[M+NH4]+":
+        neutral_losses: [189.0402]         # glycerophosphate C3H9O6P + NH3
+      "[M+H]+":
+        neutral_losses: [172.0137]         # glycerophosphate C3H9O6P
+  LPG:
+    name: "LPG {c}:{d}"
+    reference: [16, 0]
+    formula: C22H45O9P
+    carbons: [12, 26]
+    double_bonds: [0, 6]
+    adducts:
+      "[M+NH4]+":
+        neutral_losses: [189.0402]
+      "[M+H]+":
+        neutral_losses: [172.0137]
+  PI:
+    name: "PI {c}:{d}"
+    reference: [34, 1]
+    formula: C43H81O13P
+    carbons: [20, 48]
+    double_bonds: [0, 12]
+    adducts:
+      "[M+NH4]+":
+        neutral_losses: [277.0562]         # inositol phosphate C6H13O9P + NH3
+  PA:
+    name: "PA {c}:{d}"
+    reference: [34, 1]
+    formula: C37H71O8P
+    carbons: [20, 48]
+    double_bonds: [0, 12]
+    adducts:
+      "[M+NH4]+":
+        neutral_losses: [115.0034]         # H3PO4 + NH3
+  CL:                                      # cardiolipins: 4 chains, bacterial membranes
+    name: "CL {c}:{d}"
+    reference: [72, 4]
+    formula: C81H150O17P2
+    carbons: [56, 84]
+    double_bonds: [0, 12]
+    adducts:
+      "[M+NH4]+":
+        dg_ions: true                      # [DG+H-H2O]+ ions of its phosphatidyl halves
+
+  # ---- Glycerolipids -------------------------------------------------------
+  DG:
+    name: "DG {c}:{d}"
+    reference: [34, 1]
+    formula: C37H70O5
+    carbons: [24, 44]
+    double_bonds: [0, 12]
+    adducts:
+      "[M+NH4]+":
+        chains: acyl_losses_nh3
+        chains_required: true
+      "[M+Na]+":
+        chains: acyl_losses
+        chains_required: true
+  TG:
+    name: "TG {c}:{d}"
+    reference: [52, 2]
+    formula: C55H102O6
+    carbons: [36, 66]
+    double_bonds: [0, 16]
+    adducts:
+      "[M+NH4]+":
+        chains: acyl_losses_nh3            # [M+NH4-RCOOH-NH3]+: one DG-like ion per chain
+        chains_required: true
+      "[M+Na]+":
+        chains: acyl_losses
+        chains_required: true
+  MGDG:                                    # glycolipids: plants, algae, Gram-positive bacteria
+    name: "MGDG {c}:{d}"
+    reference: [34, 1]
+    formula: C43H80O10
+    carbons: [24, 44]
+    double_bonds: [0, 12]
+    adducts:
+      "[M+NH4]+":
+        neutral_losses: [197.0899]         # hexose C6H12O6 + NH3
+  DGDG:
+    name: "DGDG {c}:{d}"
+    reference: [34, 1]
+    formula: C49H90O15
+    carbons: [24, 44]
+    double_bonds: [0, 12]
+    adducts:
+      "[M+NH4]+":
+        neutral_losses: [359.1428]         # two hexoses C12H22O11 + NH3
+  SQDG:                                    # sulfolipids: cyanobacteria, algae
+    name: "SQDG {c}:{d}"
+    reference: [34, 1]
+    formula: C43H80O12S
+    carbons: [24, 44]
+    double_bonds: [0, 12]
+    adducts:
+      "[M+NH4]+":
+        neutral_losses: [261.0518]         # sulfoquinovose C6H12O8S + NH3
+  DGTS:                                    # betaine lipid: algae, bacteria (under phosphate limitation)
+    name: "DGTS {c}:{d}"
+    reference: [34, 1]
+    formula: C44H83NO7
+    carbons: [24, 44]
+    double_bonds: [0, 12]
+    adducts:
+      "[M+H]+":
+        fragments: [236.1492]              # glyceryl-trimethylhomoserine C10H22NO5+
+        optional_fragments: [144.1019]     # C7H14NO2+
+
+  # ---- Amino-acid lipids ------------------------------------------------------
+  OL:                                      # ornithine lipids: 3-hydroxy fatty acid amide + ester chain, bacterial
+    name: "OL {c}:{d}"
+    reference: [34, 1]
+    formula: C39H74N2O5
+    carbons: [24, 44]
+    double_bonds: [0, 4]
+    adducts:
+      "[M+H]+":
+        fragments: [115.0866]              # ornithine-derived C5H11N2O+
+        optional_fragments: [70.0651]      # C4H8N+
+
+  # ---- Sphingolipids --------------------------------------------------------
+  Cer:
+    name: "Cer {c}:{d};O2"
+    reference: [34, 1]
+    formula: C34H67NO3
+    carbons: [28, 48]
+    double_bonds: [0, 4]
+    adducts:
+      "[M+H]+":
+        chains: sphingoid_base
+        chains_required: true
+  HexCer:
+    name: "HexCer {c}:{d};O2"
+    reference: [34, 1]
+    formula: C40H77NO8
+    carbons: [28, 48]
+    double_bonds: [0, 4]
+    adducts:
+      "[M+H]+":
+        chains: sphingoid_base
+        chains_required: true
+        optional_neutral_losses: [162.0528]   # hexose - H2O, C6H10O5
+  SM:
+    name: "SM {c}:{d};O2"
+    reference: [34, 1]
+    formula: C39H79N2O6P
+    carbons: [28, 48]
+    double_bonds: [0, 4]
+    adducts:
+      "[M+H]+":
+        fragments: [184.0733]
+        chains: sphingoid_base
+
+  # ---- Sterol esters, acylcarnitines ------------------------------------------
+  CE:
+    name: "CE {c}:{d}"
+    reference: [18, 1]
+    formula: C45H78O2
+    carbons: [12, 26]
+    double_bonds: [0, 6]
+    adducts:
+      "[M+NH4]+":
+        fragments: [369.3516]              # cholestadiene ion C27H45+
+  CAR:
+    name: "CAR {c}:{d}"
+    reference: [16, 0]
+    formula: C23H45NO4
+    carbons: [2, 26]
+    double_bonds: [0, 6]
+    adducts:
+      "[M+H]+":
+        fragments: [85.0284]               # C4H5O2+

@@ -49,6 +49,10 @@ RESULTS = {
     "nodes": "results/network/nodes.parquet",
     "edges": "results/network/edges.parquet",
     "graphml": "results/network/network.graphml",
+    "library_annotations": "results/annotations/library.parquet",
+    "lipid_annotations": "results/annotations/lipid_rules.parquet",
+    "candidates": "results/annotations/candidates.parquet",
+    "best": "results/annotations/best.parquet",
 }
 
 
@@ -62,3 +66,4 @@ include: "rules/preprocessing.smk"
 include: "rules/gap_filling.smk"
 include: "rules/export.smk"
 include: "rules/network.smk"
+include: "rules/annotation.smk"

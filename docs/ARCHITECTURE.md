@@ -5,8 +5,10 @@ recorded in [`CLAUDE.md`](../CLAUDE.md). ATLAS-MS is a placeholder name
 (Python package `atlas_ms`, command `atlas-ms`).
 
 Milestones 1 (preprocessing, §6 stages 1–5) and 2 (network, §6 stages 6–8,
-and the app's Setup and Network tabs, §11) are implemented. The other
-sections describe the plan.
+and the app's Setup and Network tabs, §11) are implemented. Milestone 3
+(annotation) is in progress: spectral library search, rule-based lipid
+annotation, harmonization and the Annotation tab are implemented; SIRIUS and
+MS2Query come next. The other sections describe the plan.
 
 ## 1. Scope
 
@@ -78,27 +80,27 @@ There are three layers, and they only talk to each other through the project fol
 ├── pyproject.toml             # the atlas_ms package and its Python dependencies
 ├── workflow/
 │   ├── Snakefile              # loads/validates project.yaml + samples.tsv, includes the rules
-│   ├── rules/                 # conversion, preprocessing, gap_filling, export (.smk)
+│   ├── rules/                 # conversion, preprocessing, gap_filling, export, network, annotation (.smk)
 │   ├── envs/                  # conversion.yaml (+ ms2query, ms2lda, sirius later)
 │   └── scripts/               # thin entry points -> atlas_ms functions
 ├── src/atlas_ms/
 │   ├── config.py              # param sections = single source of truth for parameters
-│   ├── presets/               # instruments.yaml, adducts.yaml (+ lipid rules later)
+│   ├── presets/               # instruments.yaml, adducts.yaml, lipid_rules.yaml
 │   ├── project.py             # project folder + sample table
 │   ├── runner.py, cli.py      # `atlas-ms init/run`
 │   ├── logs.py                # rule log files (captures OpenMS C++ output too)
 │   ├── preprocessing/         # msdata, features, alignment, annotate, linking, gap_filling, export
-│   ├── contracts.py           # (M2+) table schemas, importable from every env
+│   ├── mgf.py                 # small MGF reader (no matchms: fast to import)
 │   ├── network/               # spectra (QC), scoring, graph (construction, families, layout, GraphML), model_files
-│   ├── annotation/            # (M3) plugin base, annotators, lipids/, harmonize.py
+│   ├── annotation/            # schema (candidate format), libraries, lipids, harmonize
 │   ├── stats/                 # (M4) FBMN-STATS port
-│   └── app/                   # Panel app: main, setup_view, run_view, network_view, data
+│   └── app/                   # Panel app: main, setup_view, run_view, network_view, annotation_view, plots, data
 └── tests/                     # pytest; synthetic.py generates LC-MS runs
 ```
 
 Rules running in an isolated env (MS2Query, MS2LDA) import only
-`atlas_ms.contracts`, which depends on nothing but pandas and pyarrow. The
-Snakefile puts `src/` on `PYTHONPATH` for those rules.
+`atlas_ms.annotation.schema`, which depends on nothing but numpy, pandas and
+pyarrow. The Snakefile puts `src/` on `PYTHONPATH` for those rules.
 
 ## 4. Project folder
 
@@ -119,7 +121,7 @@ my_project/
 │   ├── gnps/             # ms2_spectra.mgf, quantification_table.txt, metadata.tsv,
 │   │                     # iimn_supplementary_pairs.csv (GNPS FBMN, "OpenMS" format)
 │   ├── network/          # nodes.parquet (family, community, x/y, QC), edges.parquet, network.graphml
-│   ├── annotations/      # (M3) <source>.parquet per annotator, candidates.parquet, best.parquet
+│   ├── annotations/      # library.parquet, lipid_rules.parquet (one per source), candidates.parquet, best.parquet
 │   ├── ms2lda/           # (M4) motifs.parquet, feature_motifs.parquet
 │   └── stats/            # (M4) cleaned_quant.parquet, blank_flags.parquet
 └── logs/                 # one log per rule and sample (incl. OpenMS output)
@@ -177,11 +179,11 @@ step needs the spectra (`atlas_ms.preprocessing.msdata.load_run`).
 | 6 | Spectrum QC (`spectrum_qc`) | core | `work/network/spectra.pickle`, `spectrum_qc.parquet` | The MGF spectrum of each feature is cleaned (matchms default filters, fragments within ±17 Da of the precursor removed, intensities normalised). Spectra with fewer than `min_peaks` fragments (low default: lipid MS2 is sparse) get no spectral edges. **Never filter on the similarity score.** |
 | 7 | Scoring (`score_spectra`) | core | `work/network/candidates.parquet` | matchms `ModifiedCosineGreedy` (fragment tolerance from the preset, with matched-fragment counts) or MS2DeepScore (pretrained model downloaded once to `~/.cache/atlas-ms/models` by `download_ms2deepscore_model`; CPU or CUDA). Keeps a pool of candidates: the best `candidates_per_spectrum` neighbours of each spectrum above `min_candidate_score`, so network cutoffs never re-run the scoring. |
 | 8 | Network (`build_network`) | core | `results/network/nodes.parquet`, `edges.parquet`, `network.graphml` | Blank features (mean blank / mean sample > `max_blank_ratio`, only when `samples.tsv` lists blanks) lose their candidate edges. Then the GNPS steps: score cutoff + minimum matched fragments (cosine only) → mutual top-K → weakest edges removed while a family exceeds `max_family_size`. IIMN adduct edges are added. Families = connected components (1 = largest, -1 = singleton), Louvain communities inside them. The layout is precomputed: Kamada-Kawai per family (spring layout above 150 nodes), scaled so the median edge is 1.5 units long, then nodes are pushed apart until each has room for its largest drawn size (radius doubling per 10-fold intensity, from the mean or any single sample). Families are rotated to lie flat and packed in rows, tallest first, with the singletons in rows underneath. |
-| 9 | Annotation | varies | `annotations/<source>.parquet` | See §7 and §8. |
+| 9 | Annotation (`prepare_library`, `search_libraries`, `annotate_lipids`; later SIRIUS, MS2Query) | core (+ own envs later) | `annotations/<source>.parquet`, `work/annotation/libraries/*.parquet` | See §7 and §9. Each library is read and cleaned once per project (same cleaning as the feature spectra), then searched. |
 | 10 | MS2LDA 2.0 | ms2lda | `ms2lda/*.parquet` | De novo motifs (number of motifs is a parameter) + MotifDB annotation. |
-| 11 | Harmonization | core | `annotations/candidates.parquet`, `best.parquet` | Confidence levels, conflict flags, lipid name normalization, family-level class consensus (MolNetEnhancer logic). |
+| 11 | Harmonization (`harmonize`) | core | `annotations/candidates.parquet`, `best.parquet` | Confidence levels, conflict flags, lipid name normalization (Goslin), RT trend per lipid class, family-level class consensus (MolNetEnhancer logic). See §8. |
 | 12 | Stats cleanup | core | `stats/cleaned_quant.parquet` | FBMN-STATS steps that don't depend on the chosen comparison: blank removal, imputation, normalization. |
-| 13 | Exports | core | `network.graphml` (+ Cytoscape push from the app) | GraphML carries every annotation layer as node/edge attributes. |
+| 13 | Exports (`export_graphml`) | core | `network.graphml` (+ Cytoscape push from the app, M4) | GraphML carries the feature table and the best annotation (name, level, label, lipid class, flags, family class) as node attributes. |
 
 **Network starting values** are placeholders taken from GNPS: cosine 0.7,
 6 matched peaks, top-K 10, max component 100. MS2DeepScore gets its own
@@ -192,20 +194,24 @@ the tuned values become the preset defaults.
 
 Every annotator is one Snakemake rule that writes
 `results/annotations/<source>.parquet` with the shared candidate schema
-defined in `atlas_ms.contracts`:
+defined in `atlas_ms.annotation.schema` (as built):
 
 | Column | Meaning |
 |---|---|
 | `feature_id`, `rank` | feature and candidate rank within this source |
-| `source`, `source_version` | e.g. `library:inhouse_std`, `ms2query`, `sirius:csi`, `sirius:canopus`, `sirius:formula`, `sirius:elgordo`, `lipid_rules`, `lipidmaps_ms1` |
+| `source` | e.g. `library:inhouse_std`, `lipid_rules`; later `ms2query`, `sirius:csi`, `sirius:canopus`, `sirius:formula`, `sirius:elgordo` |
 | `name`, `smiles`, `inchikey`, `formula`, `adduct` | candidate identity (any of them may be empty) |
 | `score`, `score_name` | native score of the tool |
 | `matched_peaks`, `mz_error_ppm`, `rt_error_s` | evidence |
-| `library_kind` | `experimental` / `in_silico` / `none` |
-| `lipid_shorthand`, `lipid_level` | Goslin-normalized name and Liebisch level (category / class / species / molecular species / sn-position / full structure) |
-| `classyfire_*`, `npc_*` | compound classes when the source provides them |
+| `library_kind` | `experimental` / `in_silico` / empty (not a library) |
+| `lipid_class`, `lipid_name`, `lipid_level` | lipid class, Goslin-normalized name and Liebisch level (species / molecular species / sn-position / ...), filled by harmonization for any source whose name Goslin reads |
 | `proposed_level` | the plugin's own Schymanski level (harmonization can only lower confidence, never raise it) |
-| `evidence` | JSON blob: matched diagnostic ions, COSMIC confidence, etc. |
+| `evidence` | JSON text: matched diagnostic ions, library id, RT match, etc. |
+| `reference_mz`, `reference_intensity` | the library spectrum of a library hit (for the app's mirror plot) |
+
+`candidates.parquet` adds the final `level` and `lipid_species` (sum
+composition, e.g. `PC 34:1`, used to compare sources). Compound classes
+(ClassyFire / NPClassifier) come with CANOPUS.
 
 Adding a database or API later (PubChem, LOTUS/NPAtlas, COCONUT, GNPS2)
 means adding one of three plug-in kinds:
@@ -239,21 +245,29 @@ identity on their own.
 
 | Level | Rule in v1 |
 |---|---|
-| 1 | Match against a library flagged `reference_standards`: MS2 score ≥ cutoff, matched peaks ≥ n, precursor within ppm, **and** RT within tolerance. |
+| 1 | Match against a library flagged `reference_standards`: MS2 score ≥ cutoff, matched peaks ≥ n, precursor within ppm, **and** RT within tolerance. Without an RT match, the same hit is 2a. |
 | 2a | MS2 match against an **experimental** library above the same thresholds (no RT), or an MS2Query exact match (precursor Δ within tolerance) confirmed by its cosine score and matched peaks. |
 | 2b | Not assigned automatically in v1 (manual curation is v2). |
 | 3 | CSI:FingerID top candidate (**capped at 3 whatever the COSMIC confidence**), MS2Query analog, **in-silico** library match (e.g. LipidBlast), rule-based lipid annotation, El Gordo lipid species, CANOPUS class. |
 | 4 | SIRIUS formula with ZODIAC score ≥ cutoff. In v2, MIST-CF disagreement **adds a flag and doesn't change the level**. |
 | 5 | Exact m/z only (LIPID MAPS m/z candidates are listed as suggestions). |
 
+- **Caps (as built):** in-silico library hits, lipid rules, CSI:FingerID,
+  CANOPUS, El Gordo and MS2Query are at most level 3; level 1 needs an RT
+  error (a reference RT). A cap can only make a level less confident.
 - **Best annotation per feature:** lowest level first, then a configurable
   source priority, then score.
 - **Flags** (they never silently drop a candidate):
   - structure formula ≠ SIRIUS formula
   - CANOPUS class ≠ class of the structure candidate
   - lipid class disagreement between sources
-  - RT outlier on the lipid ECN model (§9)
+  - RT outlier on the lipid ECN model (§9): per lipid class with at least 5
+    confident species, a least-squares line RT ~ carbons + double bonds,
+    robust to outliers (points with a large deleted residual are set aside
+    before judging); flag beyond 0.5 min
   - feature flagged as blank
+  - (as built) `ambiguous`: the best source has another, different candidate
+    at the same level and score
 - **Lipids report two scales:** each best lipid annotation carries the
   Schymanski level **and** the Liebisch structural level, e.g.
   `L3 · PC 16:0_18:1 (molecular species)`.
@@ -268,7 +282,9 @@ Standard metabolomics tools (MS2Query, CSI:FingerID) are weak on lipids,
 because lipid spectra are sparse and dominated by class-specific ions.
 Several layers each contribute evidence, and harmonization combines them.
 
-1. **Rule-based annotator** (our own, `config/lipid_rules/*.yaml`, editable).
+1. **Rule-based annotator** (built: `annotation/lipids.py`, rules in
+   `atlas_ms/presets/lipid_rules.yaml`; `lipids.rules_file` points to your
+   own copy).
    - For each class × adduct: diagnostic fragments, neutral losses and the
      expected nitrogen-rule parity, plus a generated species list (class ×
      total carbons × double bonds) matched on precursor m/z.
@@ -294,7 +310,17 @@ Several layers each contribute evidence, and harmonization combines them.
      | CE | `[M+NH4]+` | m/z 369.3516 |
      | Acylcarnitines | `[M+H]+` | m/z 85.0284 |
 
-   - The score is the intensity-weighted fraction of expected ions found.
+   - As built, 26 classes: PC, PC O-, LPC, PE, PE O-, LPE, PE-NMe, PE-NMe2,
+     PS, PG, LPG, PI, PA, CL, DG, TG, MGDG, DGDG, SQDG, DGTS, OL (ornithine
+     lipids), Cer, HexCer, SM, CE, CAR. Each species formula is derived from
+     one reference species of its class; a test checks them against Goslin.
+   - Chains: fatty acid (+ NH3) losses for DG / TG (a composition is given
+     only when it is the single one explaining every observed loss);
+     sphingoid base ions for Cer / HexCer / SM (`Cer 18:1;O2/16:0`).
+   - The score is the fraction of the rule's ions (and chain evidence)
+     found. A matched rule proposes level 3. Features where no rule matched
+     (including those without MS2) get the species matching their m/z as
+     level 5 suggestions (`mz_only_candidates`).
    - Isobars are separated by their headgroup evidence. For example PC 34:1
      and PE 37:1 have the same formula.
 2. **In-silico lipid library** (LipidBlast or equivalent MSP) is searched
@@ -366,7 +392,7 @@ Run / Stop, progress bar and log pane.
 0. **Setup.** Raw file picker, metadata editor (editable Tabulator
    pre-filled with the file names: `sample_type` + free `ATTRIBUTE_*`
    columns), library manager (add MSP/MGF/JSON, set kind, reference-standard
-   flag, RT tolerance).
+   flag, library RT unit, RT tolerance; built).
 1. **Network.**
    - The network is clickable and supports box select. Colour by family,
      class, confidence level, stats result or intensity. Size by intensity,
@@ -418,6 +444,16 @@ Run / Stop, progress bar and log pane.
   - MS2 search: features whose spectrum holds all the given fragments, or
     neutral losses (precursor − fragment), within a Da tolerance, are
     circled in green.
+- **Annotation tab (built):** it follows the Network tab's selection.
+  Header with the best annotation, flags and family class consensus; every
+  candidate of every source (most confident first, final and proposed
+  level, scores, readable evidence); clicking a candidate shows its
+  evidence: a mirror plot against the library spectrum for library hits,
+  or the spectrum with the diagnostic ions found by a lipid rule marked.
+  Below, the members of the molecular family and their annotations
+  (clicking one selects it). The Network tab gained colour by confidence
+  level and by lipid class (with a legend), and the best annotation in the
+  feature table and tooltips.
 - **Saving:** Setup edits are written only on Save or Run (Run saves first),
   and are validated by the same code as the pipeline.
 - **Running Snakemake:** an async subprocess (the same command as
@@ -489,8 +525,11 @@ to by path.
    layout, GraphML. App with the Setup and Network tabs (network, feature
    list, pyOpenMS-viz plots), Run button with log. Still to do: a first look
    at the user's real network, then tuning (milestone 5).
-3. **Annotation.** Library search + public libraries, MS2Query, SIRIUS API,
-   lipid module, harmonization with levels, Annotation tab.
+3. **Annotation (in progress).** Done: library search (user libraries),
+   rule-based lipid module (26 classes incl. bacterial ones), harmonization
+   with levels, flags and family consensus, Annotation tab, annotated
+   GraphML. Next: SIRIUS API, MS2Query, public libraries (downloaded on
+   your machine: this cloud session cannot reach them).
 4. **MS2LDA + stats + Cytoscape.** Statistics tab, Cytoscape push.
 5. **Network tuning.** Tune the network parameters on the first real
    network and update the presets.
