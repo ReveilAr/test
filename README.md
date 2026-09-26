@@ -45,9 +45,14 @@ atlas-ms app my_study   # port 5006, or the next free one if it is taken
 The app's sidebar opens or creates a project and runs the pipeline. The
 **Setup** tab edits the sample table (sample types, metadata columns),
 presets, adducts and all parameters. The **Network** tab shows the
-molecular network, colourable by family, community, intensity, gap-filled
-values or spectrum QC. Clicking a node or a row shows its MS2 spectrum and
-its chromatogram in every run.
+molecular network (scroll to zoom; nodes never overlap), coloured by family,
+community, retention time, intensity, gap-filled values or spectrum QC, and
+sized by mean intensity or by the intensity in one sample. Clicking a node
+or a row shows its MS2 spectrum and its chromatogram in every run, to the
+right of the network. Two selected features (shift-click, or ctrl-click in
+the table) give a mirror plot. The MS2 search circles the features whose
+spectrum holds given fragments or neutral losses. The feature table has a
+search box above every column.
 
 The first MS2DeepScore run downloads the pretrained model (about 130 MB)
 to `~/.cache/atlas-ms/models/`.

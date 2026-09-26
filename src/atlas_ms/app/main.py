@@ -27,6 +27,8 @@ from atlas_ms.runner import snakemake_command
 
 pn.extension("tabulator")
 
+ACCENT = "#c51b8a"  # magenta
+
 
 class AtlasApp:
     """The page, and the project currently open in it."""
@@ -91,7 +93,8 @@ class AtlasApp:
         results = load_results(self.project)
         if results is not None:
             reader = ChromatogramReader(self.project, list(self.project.load_samples().index))
-            self.network = NetworkTab(results, reader)
+            tolerance = self.setup.config.scoring.fragment_tolerance_da
+            self.network = NetworkTab(results, reader, fragment_tolerance=tolerance)
             tabs.append(("Network", self.network.view()))
         else:
             tabs.append(("Network", pn.pane.Markdown("No results yet: press **Run** in the sidebar.")))
@@ -103,6 +106,7 @@ class AtlasApp:
     def page(self) -> pn.template.BaseTemplate:
         return pn.template.FastListTemplate(
             title="ATLAS-MS", sidebar=self.sidebar, main=[self.content], sidebar_width=340,
+            accent=ACCENT,  # header bar and primary buttons
         )
 
 

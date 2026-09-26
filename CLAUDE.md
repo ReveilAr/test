@@ -41,6 +41,11 @@ keeps the decisions and the rules every session must follow.
   - `atlas_ms.app` (`atlas-ms app`): sidebar open / create / run; Setup tab
     (samples, presets, adducts, parameters); Network tab (network ↔ table
     selection, MS2 spectrum, chromatograms from the mzML).
+  - First real network (1,384 nodes, 82 families, 320 singletons): the
+    user asked for a Network tab rework, now done. Nodes never overlap
+    (layout minimum distance + radii in layout units), RT in minutes,
+    colour by RT, size by sample, mirror plot, MS2 fragment / neutral loss
+    search, column search boxes, plots right of the network, magenta accent.
   - Next: tuning on the real network (milestone 5), then milestone 3
     (annotation).
 - **Name:** ATLAS-MS is a placeholder (Python package `atlas_ms`, command
@@ -225,6 +230,21 @@ keeps the decisions and the rules every session must follow.
 - **Modified cosine with one matched fragment** links unrelated spectra by
   coincidence. Example in the synthetic data: TG vs CE at 0.78, through one
   shifted fragment. Keep `min_matched_peaks` above 1.
+- **HoloViews 1.23 / Bokeh 3.9 network plot:**
+  - `hover_tooltips=[...]` sets the tooltip fields (otherwise every column,
+    including x, y and colour, is listed).
+  - A Bokeh hover lists *every* glyph under the cursor. Nodes therefore get
+    a `radius` in data units (a `Points` style option), which the layout's
+    minimum distance keeps from overlapping; pixel `size`s overlap when
+    zoomed out.
+  - `data_aspect=1` keeps circles round and distances true.
+- **pyopenms-viz peak labels** (`annotate_top_n_peaks`) overlap when intense
+  peaks are close. The app turns them off and adds its own Bokeh `Label`s
+  (`app.plots.label_peaks`).
+- **Panel Tabulator:** `header_filters={col: {"type": "input", "func": "like"}}`
+  gives a "contains" search box per column (it also matches numbers). Use
+  `NumberFormatter` formatters for fixed decimals: the default format adds
+  thousands separators.
 - **ThermoRawFileParser 1.4.5 (bioconda, runs on Mono):** `--input=`,
   `--output=` (a file) and `--format=2` (indexed mzML). Vendor peak picking
   is on by default.

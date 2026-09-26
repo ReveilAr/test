@@ -12,6 +12,7 @@ from atlas_ms.app.data import ChromatogramReader, load_results, read_mgf
 from atlas_ms.app.main import AtlasApp, free_port
 from atlas_ms.app.run_view import RunPanel
 from atlas_ms.app.setup_view import SetupTab
+from atlas_ms.network.graph import MIN_DISTANCE
 from atlas_ms.project import Project
 from test_workflow import feature_of
 
@@ -49,10 +50,67 @@ def test_network_and_table_share_the_selection(processed_project):
     assert features.iloc[network.table.selection]["feature_id"].tolist() == [5]
     network.table.selection = [0, 2]
     assert network.selected == features.iloc[[0, 2]]["feature_id"].tolist()
-    # Details of the first selected feature: header, MS2 spectrum, chromatograms.
+    # One selected feature: header, MS2 spectrum, chromatograms.
+    network.selected = [5]
     assert len(network.details().objects) == 3
-    for option in network.param.color_by.objects:
-        network.color_by = option  # every colouring can be computed
+    # Two selected features with MS2: header, mirror caption, mirror plot, chromatograms.
+    network.selected = [1, 3]
+    assert len(network.details().objects) == 4
+    # No MS1 scan around the feature's RT (empty chromatograms): a warning instead of the plot.
+    assert network.reader.xic(features["mz"].iloc[0], 1e5).empty
+    network.reader.xic = lambda mz, rt: pd.DataFrame(columns=["sample", "rt", "intensity"])
+    network.selected = [5]
+    assert type(network.details().objects[-1]).__name__ == "Alert"
+    # Every colouring and every node size (one per sample) can be computed,
+    # and no node is wider than the minimum distance between two nodes.
+    for color in network.param.color_by.objects:
+        for size in network.param.size_by.objects:
+            network._points(color, size)
+            assert 2 * network._radii(size).max() < MIN_DISTANCE
+    assert "treat_2" in network.param.size_by.objects
+
+
+def test_feature_table_in_minutes_with_search_boxes(processed_project):
+    network = AtlasApp(str(processed_project.root)).network
+    table = network.table
+    assert "rt_min" in table.value and "rt" not in table.value
+    cer = table.value[table.value["mz"].round(2) == 538.52]
+    assert cer["rt_min"].iloc[0] == pytest.approx(200 / 60, abs=0.01)
+    assert set(table.header_filters) == set(table.value.columns)
+    assert table.page_size == 25
+
+
+def test_fragment_and_neutral_loss_search(processed_project):
+    network = AtlasApp(str(processed_project.root)).network
+    features = network.results.features
+    ids = {name: feature_of(features, name)["feature_id"] for name in (
+        "PC 34:1 [M+H]+", "LPC 16:0 [M+H]+", "Cer 34:1;O2 [M+H]+")}
+
+    # Phosphocholine fragments: PC and LPC have both, SM only m/z 184.
+    network.fragment_text.value = "184.0733, 104.107"
+    network.search_fragments()
+    assert sorted(network.matched) == sorted([ids["PC 34:1 [M+H]+"], ids["LPC 16:0 [M+H]+"]])
+
+    # Water loss: LPC (496.34 -> 478.33) and Cer (538.52 -> 520.51).
+    network.fragment_kind.value = "neutral losses"
+    network.fragment_text.value = "18.0106"
+    network.search_fragments()
+    assert sorted(network.matched) == sorted([ids["LPC 16:0 [M+H]+"], ids["Cer 34:1;O2 [M+H]+"]])
+
+    network.clear_search()
+    assert network.matched == []
+
+
+def test_peak_labels_do_not_overlap():
+    import numpy as np
+
+    from atlas_ms.app.plots import label_peaks
+
+    mz = np.array([184.07, 184.5, 300.0, 478.3, 104.1])
+    intensity = np.array([100.0, 90.0, 20.0, 10.0, 1.0])
+    chosen = label_peaks(mz, intensity)
+    # 184.5 is too close to the more intense 184.07; 104.1 is below 5% of the base peak.
+    assert sorted(mz[chosen]) == [184.07, 300.0, 478.3]
 
 
 def test_setup_saves_metadata_and_rejects_bad_adducts(project_copy):

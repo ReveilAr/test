@@ -176,7 +176,7 @@ step needs the spectra (`atlas_ms.preprocessing.msdata.load_run`).
 | 5 | Export (`export`) | core | `results/gnps/*`, `features.parquet`, `quant.parquet` | Detection-fraction filter, then features with MS2 are numbered first (`feature_id` = GNPS row ID = MGF SCANS). pyOpenMS GNPSMGFFile / GNPSQuantificationFile + IIMN pairs, and a GNPS metadata table from `samples.tsv`. We keep the GNPS FBMN schema and don't invent a new one. The Parquet tables cover *all* features (with or without MS2). (M3: SIRIUS `.ms` export with MS1 isotope patterns.) |
 | 6 | Spectrum QC (`spectrum_qc`) | core | `work/network/spectra.pickle`, `spectrum_qc.parquet` | The MGF spectrum of each feature is cleaned (matchms default filters, fragments within ±17 Da of the precursor removed, intensities normalised). Spectra with fewer than `min_peaks` fragments (low default: lipid MS2 is sparse) get no spectral edges. **Never filter on the similarity score.** |
 | 7 | Scoring (`score_spectra`) | core | `work/network/candidates.parquet` | matchms `ModifiedCosineGreedy` (fragment tolerance from the preset, with matched-fragment counts) or MS2DeepScore (pretrained model downloaded once to `~/.cache/atlas-ms/models` by `download_ms2deepscore_model`; CPU or CUDA). Keeps a pool of candidates: the best `candidates_per_spectrum` neighbours of each spectrum above `min_candidate_score`, so network cutoffs never re-run the scoring. |
-| 8 | Network (`build_network`) | core | `results/network/nodes.parquet`, `edges.parquet`, `network.graphml` | Blank features (mean blank / mean sample > `max_blank_ratio`, only when `samples.tsv` lists blanks) lose their candidate edges. Then the GNPS steps: score cutoff + minimum matched fragments (cosine only) → mutual top-K → weakest edges removed while a family exceeds `max_family_size`. IIMN adduct edges are added. Families = connected components (1 = largest, -1 = singleton), Louvain communities inside them. The layout is precomputed per family and packed into a grid. |
+| 8 | Network (`build_network`) | core | `results/network/nodes.parquet`, `edges.parquet`, `network.graphml` | Blank features (mean blank / mean sample > `max_blank_ratio`, only when `samples.tsv` lists blanks) lose their candidate edges. Then the GNPS steps: score cutoff + minimum matched fragments (cosine only) → mutual top-K → weakest edges removed while a family exceeds `max_family_size`. IIMN adduct edges are added. Families = connected components (1 = largest, -1 = singleton), Louvain communities inside them. The layout is precomputed: Kamada-Kawai per family (spring layout above 150 nodes), scaled to a fixed node spacing, then nodes are pushed apart until none are closer than a minimum distance. Families are packed in rows, largest first, and the singletons fill a grid underneath. |
 | 9 | Annotation | varies | `annotations/<source>.parquet` | See §7 and §8. |
 | 10 | MS2LDA 2.0 | ms2lda | `ms2lda/*.parquet` | De novo motifs (number of motifs is a parameter) + MotifDB annotation. |
 | 11 | Harmonization | core | `annotations/candidates.parquet`, `best.parquet` | Confidence levels, conflict flags, lipid name normalization, family-level class consensus (MolNetEnhancer logic). |
@@ -399,6 +399,22 @@ Run / Stop, progress bar and log pane.
   are extracted on demand from the mzML files, opened "on disc"
   (pyOpenMS `OnDiscMSExperiment`) and mapped onto the aligned RT axis with
   each run's trafoXML.
+- **Network tab (reworked after the first real network):**
+  - Layout: the network on the left and the plots of the selection on the
+    right; the feature table below (25 rows per page, a "contains" search
+    box above every column).
+  - Nodes: the radius is in layout units, never more than half the minimum
+    node distance, so nodes never overlap, at any zoom, and the tooltip
+    shows one node only. Colour by family, community, retention time,
+    intensity, gap-filled values or spectrum QC. Size: same size, mean
+    intensity, or the intensity in one chosen sample.
+  - Plots: RT in minutes; intensity ticks with one decimal. Peak labels are
+    chosen from the most intense down, skipping peaks too close to a
+    label already placed, so they never overlap. Two selected features
+    give a mirror plot (relative intensity) with their edge score.
+  - MS2 search: features whose spectrum holds all the given fragments, or
+    neutral losses (precursor − fragment), within a Da tolerance, are
+    circled in green.
 - **Saving:** Setup edits are written only on Save or Run (Run saves first),
   and are validated by the same code as the pipeline.
 - **Running Snakemake:** an async subprocess (the same command as

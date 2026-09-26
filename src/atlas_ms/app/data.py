@@ -137,3 +137,26 @@ class ChromatogramReader:
 def log_intensity(values: pd.Series) -> pd.Series:
     """log10 of intensities, with 0 for missing or non-positive values."""
     return values.where(values > 0).apply(lambda v: math.log10(v) if v == v else 0.0)
+
+
+def find_fragments(
+    spectra: dict[int, tuple[np.ndarray, np.ndarray]],
+    masses: list[float],
+    tolerance: float,
+    precursors: dict[int, float] | None = None,
+) -> list[int]:
+    """
+    Feature ids whose MS2 spectrum contains *every* one of ``masses``
+    (within ``tolerance``, in Da).
+
+    With ``precursors`` (feature id -> precursor m/z), ``masses`` are neutral
+    losses instead: a loss L is present when a fragment sits at
+    precursor - L. Class-specific losses are how many lipids are recognised
+    in positive mode (e.g. 141.019 for PE, 185.009 for PS).
+    """
+    found = []
+    for feature_id, (mz, _) in spectra.items():
+        values = mz if precursors is None else precursors[feature_id] - mz
+        if len(values) and all(np.abs(values - mass).min() <= tolerance for mass in masses):
+            found.append(feature_id)
+    return found

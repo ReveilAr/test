@@ -147,3 +147,36 @@ def test_ms2deepscore_through_the_workflow(processed_project, tmp_path):
     assert result.returncode == 0, result.stderr[-3000:]
     assert (root / "results" / "network" / "nodes.parquet").exists()
 
+
+
+def test_layout_keeps_nodes_and_families_apart():
+    from atlas_ms.network.graph import MIN_DISTANCE, layout
+
+    # Three dense families (cliques of 30, 12 and 5 nodes) and some singletons.
+    graph = nx.Graph()
+    start = 0
+    for size in (30, 12, 5):
+        graph.add_edges_from((start + i, start + j) for i in range(size) for j in range(i + 1, size))
+        start += size
+    graph.add_nodes_from(range(start, start + 8))
+    positions = layout(graph)
+    assert set(positions) == set(graph)
+
+    for family in nx.connected_components(graph):
+        coords = np.array([positions[n] for n in family])
+        if len(coords) > 1:
+            dist = np.sqrt(((coords[:, None] - coords[None]) ** 2).sum(-1))
+            np.fill_diagonal(dist, np.inf)
+            assert dist.min() >= MIN_DISTANCE * 0.99  # no overlapping nodes inside a family
+    # Nor anywhere else (between families, or with the singletons).
+    coords = np.array(list(positions.values()))
+    dist = np.sqrt(((coords[:, None] - coords[None]) ** 2).sum(-1))
+    np.fill_diagonal(dist, np.inf)
+    assert dist.min() >= MIN_DISTANCE * 0.99
+    # The bounding boxes of different families do not overlap.
+    boxes = [np.array([positions[n] for n in f]) for f in nx.connected_components(graph) if len(f) > 1]
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1:]:
+            separate_x = a[:, 0].max() < b[:, 0].min() or b[:, 0].max() < a[:, 0].min()
+            separate_y = a[:, 1].max() < b[:, 1].min() or b[:, 1].max() < a[:, 1].min()
+            assert separate_x or separate_y

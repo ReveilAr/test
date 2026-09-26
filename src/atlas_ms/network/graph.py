@@ -128,33 +128,86 @@ def number_groups(groups: list[set]) -> dict:
     return numbering
 
 
+# Layout units: the typical distance between neighbouring nodes is NODE_SPACING,
+# and no two nodes are closer than MIN_DISTANCE. The app draws nodes with a
+# radius below MIN_DISTANCE / 2 in these units, so nodes never overlap.
+NODE_SPACING = 2.0
+MIN_DISTANCE = 1.2
+FAMILY_GAP = 3.0  # empty space between two families
+
+
+def spread_apart(coords: np.ndarray, min_distance: float, iterations: int = 100) -> np.ndarray:
+    """
+    Move nodes apart until no two are closer than ``min_distance``: every
+    too-close pair is pushed apart by half of the missing distance, and this
+    is repeated until nothing overlaps (or ``iterations`` is reached).
+    """
+    coords = coords + np.random.default_rng(0).normal(0, 1e-3, coords.shape)  # separate identical points
+    for _ in range(iterations):
+        diff = coords[:, None, :] - coords[None, :, :]  # all pairwise vectors
+        dist = np.sqrt((diff ** 2).sum(axis=-1))
+        np.fill_diagonal(dist, np.inf)
+        overlap = np.clip(min_distance - dist, 0.0, None)
+        if not overlap.any():
+            break
+        coords = coords + (diff / dist[..., None] * (overlap / 2)[..., None]).sum(axis=1)
+    return coords
+
+
+def family_layout(family: nx.Graph) -> tuple[list, np.ndarray]:
+    """
+    Coordinates of one family, starting at (0, 0), in layout units.
+
+    Kamada-Kawai places nodes so that their distances follow the number of
+    edges between them, which spreads a family evenly (a spring layout packs
+    dense communities into blobs). It compares all pairs of nodes, so large
+    families (> 150 nodes, only possible with a high family-size limit) use a
+    spring layout instead.
+    """
+    nodes = list(family)
+    if len(nodes) == 1:
+        return nodes, np.zeros((1, 2))
+    if len(nodes) <= 150:
+        positions = nx.kamada_kawai_layout(family, weight=None)
+    else:
+        positions = nx.spring_layout(family, seed=0, iterations=100)
+    coords = np.array([positions[n] for n in nodes])
+    # Scale so that the median distance to the nearest neighbour is NODE_SPACING.
+    dist = np.sqrt(((coords[:, None, :] - coords[None, :, :]) ** 2).sum(axis=-1))
+    np.fill_diagonal(dist, np.inf)
+    nearest = np.median(dist.min(axis=1))
+    coords = spread_apart(coords * NODE_SPACING / max(nearest, 1e-9), MIN_DISTANCE)
+    return nodes, coords - coords.min(axis=0)
+
+
 def layout(graph: nx.Graph) -> dict:
     """
-    Node -> (x, y). Each family gets its own force-directed layout in a box
-    whose side grows with the square root of its size. The boxes are placed
-    row by row, largest first, with the singletons at the end, like
-    Cytoscape's grid of components.
+    Node -> (x, y). Each family gets its own layout (``family_layout``). The
+    families are placed row by row, largest first, like Cytoscape's grid of
+    components, and the singletons fill a compact grid underneath.
     """
     families = sorted(nx.connected_components(graph), key=lambda g: (-len(g), min(g)))
-    total_area = sum(len(family) for family in families)
-    row_width = max(math.sqrt(total_area) * 2.0, math.sqrt(len(families[0])) * 2.0) if families else 1.0
+    blocks = [family_layout(graph.subgraph(f)) for f in families if len(f) > 1]
+    singletons = sorted(n for f in families if len(f) == 1 for n in f)
+
+    # Rows about 1.5 times wider than the whole is tall (the app's plot is wide).
+    sizes = [coords.max(axis=0) + FAMILY_GAP for _, coords in blocks]
+    area = sum(w * h for w, h in sizes) + len(singletons) * NODE_SPACING ** 2
+    row_width = max([math.sqrt(1.5 * area)] + [w for w, _ in sizes])
+
     positions, x, y, row_height = {}, 0.0, 0.0, 0.0
-    for family in families:
-        side = math.sqrt(len(family)) * 2.0 if len(family) > 1 else 1.0
-        if x + side > row_width and x > 0:  # start a new row
-            x, y, row_height = 0.0, y - row_height - 1.0, 0.0
-        if len(family) == 1:
-            local = {next(iter(family)): np.array([0.5, 0.5])}
-        else:
-            spring = nx.spring_layout(graph.subgraph(family), weight="score", seed=0)
-            coords = np.array(list(spring.values()))
-            span = np.ptp(coords, axis=0)
-            span[span == 0] = 1.0
-            local = dict(zip(spring, (coords - coords.min(axis=0)) / span))
-        for node, (u, v) in local.items():
-            positions[node] = (x + u * side, y - v * side)
-        x += side + 1.0
-        row_height = max(row_height, side)
+    for (nodes, coords), (width, height) in zip(blocks, sizes):
+        if x + width > row_width and x > 0:  # start a new row
+            x, y, row_height = 0.0, y - row_height, 0.0
+        for node, (u, v) in zip(nodes, coords):
+            positions[node] = (x + u, y - v)
+        x += width
+        row_height = max(row_height, height)
+
+    y -= row_height  # singletons below the last row of families
+    per_row = max(int(row_width // NODE_SPACING), 1)
+    for index, node in enumerate(singletons):
+        positions[node] = ((index % per_row) * NODE_SPACING, y - (index // per_row) * NODE_SPACING)
     return positions
 
 
@@ -177,7 +230,12 @@ def build_network(
     candidates = candidates[~candidates["source"].isin(excluded) & ~candidates["target"].isin(excluded)]
     spectral = limit_family_size(filter_edges(candidates, settings), settings.max_family_size)
     spectral = spectral.assign(edge_type="spectral")
-    edges = pd.concat([spectral, ion_identity_edges(features)], ignore_index=True)
+    # Ion-identity edges have no score: leave those columns out rather than
+    # concatenating all-NaN columns (pandas warns about that).
+    ion = ion_identity_edges(features).dropna(axis=1, how="all")
+    frames = [frame for frame in (spectral, ion) if not frame.empty]
+    edges = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    edges = edges.reindex(columns=["source", "target", "edge_type", "score", "matched_peaks"])
     mz = features.set_index("feature_id")["mz"]
     edges["mz_delta"] = mz.loc[edges["target"]].to_numpy() - mz.loc[edges["source"]].to_numpy()
     edges = edges[EDGE_COLUMNS]
