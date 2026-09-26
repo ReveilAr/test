@@ -26,6 +26,7 @@ dependencies = [
     "panel>=1.9,<2",  # widget "label" / button "color" (1.9 names)
     "holoviews>=1.20",
     "bokeh>=3.6",
+    "colorcet>=3",  # network family colours (also a HoloViews dependency)
     "pyopenms-viz>=1.2",
 ]
 

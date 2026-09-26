@@ -17,10 +17,12 @@ the plotting code free of colour-mapping machinery. Retention times are
 shown in minutes (the pipeline itself works in seconds).
 
 Overlapping nodes: node sizes are radii in layout units (like the x and y
-coordinates), not pixels. The layout keeps nodes at least MIN_DISTANCE
-apart and no radius exceeds MIN_DISTANCE / 2, so two nodes never overlap,
-at any zoom: the mouse is only ever over one node, and its tooltip is the
-only one shown. Zooming in makes the nodes bigger on screen, as in Cytoscape.
+coordinates), not pixels, computed by ``graph.node_radius``: a node doubles
+in width for every 10-fold increase in intensity. The layout
+(``graph.layout``) left room for each node's largest size, so two nodes
+never overlap, at any zoom: the mouse is only ever over one node, and its
+tooltip is the only one shown. Zooming in makes the nodes bigger on screen,
+as in Cytoscape.
 """
 
 import re
@@ -31,11 +33,12 @@ import pandas as pd
 import panel as pn
 import param
 from bokeh.models.widgets.tables import NumberFormatter
-from bokeh.palettes import Category20, Viridis256
+from bokeh.palettes import Viridis256
+from colorcet import glasbey_dark
 
 from atlas_ms.app.data import ChromatogramReader, Results, find_fragments, log_intensity
 from atlas_ms.app.plots import chromatogram_plot, mirror_plot, spectrum_plot
-from atlas_ms.network.graph import MIN_DISTANCE
+from atlas_ms.network.graph import MEDIAN_RADIUS, node_radius, size_reference
 
 hv.extension("bokeh")
 
@@ -63,9 +66,12 @@ HOVER = [("feature", "@feature_id"), ("m/z", "@mz{0.0000}"), ("RT (min)", "@rt_m
 # --------------------------------------------------------------------------
 
 def group_colors(groups: pd.Series) -> list[str]:
-    """One colour per group number (cycling through 20 colours); grey for -1 (no group)."""
-    palette = Category20[20]
-    return [GREY if g < 1 else palette[(int(g) - 1) % len(palette)] for g in groups]
+    """
+    One colour per group number, grey for -1 (no group). The palette
+    (colorcet's "glasbey_dark") has 256 vivid colours, each as different as
+    possible from the previous ones, and no pale ones that fade on white.
+    """
+    return [GREY if g < 1 else glasbey_dark[(int(g) - 1) % len(glasbey_dark)] for g in groups]
 
 
 def gradient_colors(values: pd.Series) -> list[str]:
@@ -87,24 +93,6 @@ def node_colors(nodes: pd.DataFrame, color_by: str) -> list[str]:
         return ["#e6550d" if n > 0 else "#3182bd" for n in nodes["n_gap_filled"]]
     # spectrum QC: red when the spectrum was kept out of spectral edges
     return ["#3182bd" if qc == "" else "#de2d26" for qc in nodes["qc"].fillna("")]
-
-
-# Node radii in layout units. The largest is just under half the minimum
-# distance between two nodes, so that nodes never overlap.
-MAX_RADIUS = MIN_DISTANCE / 2 - 0.05
-MIN_RADIUS = 0.45 * MAX_RADIUS
-ABSENT_RADIUS = 0.25 * MAX_RADIUS  # feature not detected in the chosen sample
-
-
-def node_radii(intensities: pd.Series) -> np.ndarray:
-    """
-    Node radii growing with log intensity, from MIN_RADIUS to MAX_RADIUS.
-    Features absent from the chosen sample get the smallest radius.
-    """
-    logs = np.log10(intensities.where(intensities > 0))
-    low, high = np.nanmin(logs), np.nanmax(logs)
-    radii = np.interp(logs, (low, max(high, low + 1e-9)), (MIN_RADIUS, MAX_RADIUS))
-    return np.where(np.isnan(logs), ABSENT_RADIUS, radii)
 
 
 def table_view(features: pd.DataFrame) -> pd.DataFrame:
@@ -154,6 +142,8 @@ class NetworkTab(param.Parameterized):
             family=nodes["family"].astype(int),
             community=nodes["community"].astype(int),
         )
+        # The intensity drawn at the median size (the same as in the layout).
+        self.size_reference = size_reference(self.nodes["intensity"])
 
         # ---- fragment search ----
         self.fragment_text = pn.widgets.TextInput(label="MS2 search (m/z, comma-separated)",
@@ -202,34 +192,44 @@ class NetworkTab(param.Parameterized):
             color="color", line_width=1, alpha=0.8)
 
     def _radii(self, size_by: str) -> np.ndarray:
+        """
+        Node radii for the "size by" option. Every option uses the same
+        scale (the median node intensity is MEDIAN_RADIUS), so sizes can be
+        compared between samples.
+        """
         if size_by == SAME_SIZE:
-            return np.full(len(self.nodes), 0.8 * MAX_RADIUS)
+            return np.full(len(self.nodes), MEDIAN_RADIUS)
         if size_by == MEAN_SIZE:
-            return node_radii(self.nodes["intensity"])
-        return node_radii(self.results.quant[size_by].reindex(self.nodes["feature_id"]).reset_index(drop=True))
+            return node_radius(self.nodes["intensity"], self.size_reference)
+        return node_radius(self.results.quant[size_by].reindex(self.nodes["feature_id"]), self.size_reference)
 
     def _points(self, color_by: str, size_by: str) -> hv.Points:
         data = self.nodes.assign(color=node_colors(self.nodes, color_by), radius=self._radii(size_by))
         return hv.Points(data, ["x", "y"], ["feature_id", "mz", "rt_min", "family", "ion", "color", "radius"]).opts(
-            color="color", radius="radius", line_color="#444444", line_width=0.5,
-            tools=["tap", "box_select", "hover"], hover_tooltips=HOVER, nonselection_alpha=0.6,
+            # No outline and no dimming of unselected nodes: full colours
+            # (the selection is shown by red rings instead).
+            color="color", radius="radius", line_alpha=0, nonselection_alpha=1.0,
+            tools=["tap", "box_select", "hover"], hover_tooltips=HOVER,
         )
 
-    def _rings(self, feature_ids: list, color: str, radius: float) -> hv.Points:
+    def _rings(self, feature_ids: list, size_by: str, color: str, margin: float) -> hv.Points:
         """
         Rings around some nodes (the selection, or the fragment-search
-        matches). Their thick line keeps them visible when zoomed out.
+        matches), ``margin`` outside the node. Their thick line keeps them
+        visible when zoomed out.
         """
-        chosen = self.nodes[self.nodes["feature_id"].isin(feature_ids)]
-        return hv.Points(chosen, ["x", "y"]).opts(radius=radius, fill_alpha=0, line_color=color, line_width=3)
+        rings = self.nodes.assign(radius=self._radii(size_by) + margin)
+        rings = rings[rings["feature_id"].isin(feature_ids)]
+        return hv.Points(rings, ["x", "y"], ["radius"]).opts(
+            radius="radius", fill_alpha=0, line_color=color, line_width=3)
 
     def network(self) -> pn.pane.HoloViews:
         points = hv.DynamicMap(pn.bind(self._points, self.param.color_by, self.param.size_by))
         # Clicks and box selections on the nodes -> selected feature ids.
         selection = hv.streams.Selection1D(source=points)
         selection.param.watch(self._network_selection, "index")
-        matches = hv.DynamicMap(pn.bind(self._rings, self.param.matched, MATCH_RING, 1.2 * MAX_RADIUS))
-        selected = hv.DynamicMap(pn.bind(self._rings, self.param.selected, SELECTED_RING, 1.5 * MAX_RADIUS))
+        matches = hv.DynamicMap(pn.bind(self._rings, self.param.matched, self.param.size_by, MATCH_RING, 0.15))
+        selected = hv.DynamicMap(pn.bind(self._rings, self.param.selected, self.param.size_by, SELECTED_RING, 0.4))
         overlay = (self._edges() * points * matches * selected).opts(
             # data_aspect=1 keeps the layout undistorted (round nodes, true distances).
             hv.opts.Overlay(xaxis=None, yaxis=None, responsive=True, min_height=650, data_aspect=1,

@@ -46,6 +46,11 @@ keeps the decisions and the rules every session must follow.
     (layout minimum distance + radii in layout units), RT in minutes,
     colour by RT, size by sample, mirror plot, MS2 fragment / neutral loss
     search, column search boxes, plots right of the network, magenta accent.
+  - Second look: the user wanted bigger nodes and a more compact network,
+    sizes doubling per 10-fold intensity, brighter colours. Done: the
+    layout is scaled on edge length and reserves each node's largest size
+    (`graph.node_radius`, shared with the app); glasbey_dark colours, no
+    outlines, no dimming. The user is happy with the Network tab otherwise.
   - Next: tuning on the real network (milestone 5), then milestone 3
     (annotation).
 - **Name:** ATLAS-MS is a placeholder (Python package `atlas_ms`, command
@@ -234,9 +239,11 @@ keeps the decisions and the rules every session must follow.
   - `hover_tooltips=[...]` sets the tooltip fields (otherwise every column,
     including x, y and colour, is listed).
   - A Bokeh hover lists *every* glyph under the cursor. Nodes therefore get
-    a `radius` in data units (a `Points` style option), which the layout's
-    minimum distance keeps from overlapping; pixel `size`s overlap when
+    a `radius` in data units (a `Points` style option), and the layout
+    leaves room for each node's largest radius; pixel `size`s overlap when
     zoomed out.
+  - Small nodes with a dark outline and `nonselection_alpha` < 1 look
+    washed out: the network uses no outline and no dimming.
   - `data_aspect=1` keeps circles round and distances true.
 - **pyopenms-viz peak labels** (`annotate_top_n_peaks`) overlap when intense
   peaks are close. The app turns them off and adds its own Bokeh `Label`s

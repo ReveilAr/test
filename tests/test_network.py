@@ -149,34 +149,73 @@ def test_ms2deepscore_through_the_workflow(processed_project, tmp_path):
 
 
 
-def test_layout_keeps_nodes_and_families_apart():
-    from atlas_ms.network.graph import MIN_DISTANCE, layout
+def test_node_radius_doubles_per_decade():
+    from atlas_ms.network.graph import ABSENT_RADIUS, MAX_RADIUS, MEDIAN_RADIUS, node_radius, size_reference
 
-    # Three dense families (cliques of 30, 12 and 5 nodes) and some singletons.
-    graph = nx.Graph()
-    start = 0
-    for size in (30, 12, 5):
+    reference = size_reference([1e5, 1e6, 1e7, np.nan, 0.0])
+    assert reference == 1e6  # median of the detected intensities
+    radii = node_radius([1e6, 1e7, 1e5, 1e12, 0.0, np.nan], reference)
+    assert radii == pytest.approx([MEDIAN_RADIUS, 2 * MEDIAN_RADIUS, MEDIAN_RADIUS / 2, MAX_RADIUS,
+                                   ABSENT_RADIUS, ABSENT_RADIUS])
+
+
+def clustered_family(start: int = 0) -> nx.Graph:
+    """
+    A family shaped like a real one: dense clusters (spectra of one lipid
+    class) joined by short bridges, plus a pendant chain.
+    """
+    rng = np.random.default_rng(1)
+    graph, clusters = nx.Graph(), []
+    for size in (20, 14, 8):
+        nodes = list(range(start, start + size))
+        graph.add_edges_from((i, j) for i in nodes for j in nodes if i < j and rng.random() < 0.5)
+        clusters.append(nodes)
+        start += size
+    nx.add_path(graph, [clusters[0][0], start, clusters[1][0]])
+    nx.add_path(graph, [clusters[1][1], start + 1, start + 2, clusters[2][0]])
+    nx.add_path(graph, [clusters[0][1], start + 3, start + 4, start + 5])
+    return graph
+
+
+def test_layout_is_compact_and_nodes_never_overlap():
+    from atlas_ms.network.graph import NODE_GAP, layout
+
+    # A clustered family, two cliques, and singletons; nodes of random sizes.
+    graph = clustered_family()
+    start = max(graph) + 1
+    for size in (12, 5):
         graph.add_edges_from((start + i, start + j) for i in range(size) for j in range(i + 1, size))
         start += size
     graph.add_nodes_from(range(start, start + 8))
-    positions = layout(graph)
+    radius = dict(zip(graph, np.random.default_rng(0).uniform(0.125, 2.0, len(graph))))
+    positions = layout(graph, radius)
     assert set(positions) == set(graph)
 
-    for family in nx.connected_components(graph):
-        coords = np.array([positions[n] for n in family])
-        if len(coords) > 1:
-            dist = np.sqrt(((coords[:, None] - coords[None]) ** 2).sum(-1))
-            np.fill_diagonal(dist, np.inf)
-            assert dist.min() >= MIN_DISTANCE * 0.99  # no overlapping nodes inside a family
-    # Nor anywhere else (between families, or with the singletons).
-    coords = np.array(list(positions.values()))
+    # No two nodes overlap, anywhere: the gap between their edges is at least NODE_GAP.
+    nodes = list(positions)
+    coords = np.array([positions[n] for n in nodes])
+    radii = np.array([radius[n] for n in nodes])
     dist = np.sqrt(((coords[:, None] - coords[None]) ** 2).sum(-1))
     np.fill_diagonal(dist, np.inf)
-    assert dist.min() >= MIN_DISTANCE * 0.99
-    # The bounding boxes of different families do not overlap.
-    boxes = [np.array([positions[n] for n in f]) for f in nx.connected_components(graph) if len(f) > 1]
-    for i, a in enumerate(boxes):
-        for b in boxes[i + 1:]:
-            separate_x = a[:, 0].max() < b[:, 0].min() or b[:, 0].max() < a[:, 0].min()
-            separate_y = a[:, 1].max() < b[:, 1].min() or b[:, 1].max() < a[:, 1].min()
-            assert separate_x or separate_y
+    assert (dist - radii[:, None] - radii[None, :]).min() >= NODE_GAP * 0.95
+
+    # The bounding boxes of different families (node sizes included) do not overlap.
+    families = [list(f) for f in nx.connected_components(graph) if len(f) > 1]
+    boxes = [(np.array([positions[n] for n in f]), np.array([radius[n] for n in f])) for f in families]
+    boxes = [((c - r[:, None]).min(0), (c + r[:, None]).max(0)) for c, r in boxes]
+    for i, (low_a, high_a) in enumerate(boxes):
+        for low_b, high_b in boxes[i + 1:]:
+            assert (high_a < low_b).any() or (high_b < low_a).any()
+
+
+def test_clustered_family_layout_is_compact():
+    from atlas_ms.network.graph import MEDIAN_RADIUS, layout
+
+    # With every node at the median size (1 unit wide), the family of dense
+    # clusters takes about 4 square units per node; the first layout (scaled
+    # on the closest neighbours) took about 30, most of it empty.
+    graph = clustered_family()
+    coords = np.array(list(layout(graph).values()))
+    width, height = np.ptp(coords, axis=0) + 2 * MEDIAN_RADIUS
+    assert width * height / len(graph) < 8
+    assert width >= height  # longest axis horizontal

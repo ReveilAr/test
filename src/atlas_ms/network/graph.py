@@ -128,19 +128,49 @@ def number_groups(groups: list[set]) -> dict:
     return numbering
 
 
-# Layout units: the typical distance between neighbouring nodes is NODE_SPACING,
-# and no two nodes are closer than MIN_DISTANCE. The app draws nodes with a
-# radius below MIN_DISTANCE / 2 in these units, so nodes never overlap.
-NODE_SPACING = 2.0
-MIN_DISTANCE = 1.2
-FAMILY_GAP = 3.0  # empty space between two families
+# Node sizes and spacing, in layout units. The app draws each node with the
+# radius ``node_radius`` gives, in these same units, so the room the layout
+# leaves around a node is exactly what the drawing needs: nodes never overlap.
+MEDIAN_RADIUS = 0.5  # a node of median intensity is 1 unit wide
+MIN_RADIUS = MEDIAN_RADIUS / 4  # 100 times weaker than the median, or less
+MAX_RADIUS = MEDIAN_RADIUS * 4  # 100 times more intense than the median, or more
+ABSENT_RADIUS = MEDIAN_RADIUS / 6  # not detected (in the sample chosen in the app)
+NODE_GAP = 0.25  # minimum empty space between two nodes
+EDGE_LENGTH = 1.5  # typical edge length
+FAMILY_GAP = 2.0  # empty space between two families
 
 
-def spread_apart(coords: np.ndarray, min_distance: float, iterations: int = 100) -> np.ndarray:
+def size_reference(intensities) -> float:
+    """The intensity drawn at MEDIAN_RADIUS: the median of the nodes' intensities."""
+    values = np.asarray(intensities, dtype=float)
+    values = values[values > 0]  # also drops NaN
+    return float(np.median(values)) if len(values) else 1.0
+
+
+def node_radius(intensities, reference: float) -> np.ndarray:
     """
-    Move nodes apart until no two are closer than ``min_distance``: every
-    too-close pair is pushed apart by half of the missing distance, and this
-    is repeated until nothing overlaps (or ``iterations`` is reached).
+    Node radius for each intensity. It doubles for every 10-fold increase in
+    intensity: radius = MEDIAN_RADIUS * 2 ** log10(intensity / reference),
+    with ``reference`` from ``size_reference``. A node 10 times more intense
+    than the median is twice as wide, one 10 times weaker half as wide.
+
+    Radii are clipped to MIN_RADIUS..MAX_RADIUS (two decades on each side of
+    the median), so that a few huge features do not swamp their family and
+    weak ones stay visible. Missing or zero intensities (feature not
+    detected) get the smaller ABSENT_RADIUS.
+    """
+    values = np.asarray(intensities, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        radius = MEDIAN_RADIUS * 2.0 ** np.log10(values / reference)
+    return np.where(values > 0, np.clip(radius, MIN_RADIUS, MAX_RADIUS), ABSENT_RADIUS)
+
+
+def spread_apart(coords: np.ndarray, min_distance, iterations: int = 300) -> np.ndarray:
+    """
+    Move nodes apart until no two are closer than ``min_distance`` (a number,
+    or a matrix with one value per pair of nodes): every too-close pair is
+    pushed apart by half of the missing distance, and this is repeated until
+    nothing overlaps (or ``iterations`` is reached).
     """
     coords = coords + np.random.default_rng(0).normal(0, 1e-3, coords.shape)  # separate identical points
     for _ in range(iterations):
@@ -154,60 +184,90 @@ def spread_apart(coords: np.ndarray, min_distance: float, iterations: int = 100)
     return coords
 
 
-def family_layout(family: nx.Graph) -> tuple[list, np.ndarray]:
+def family_layout(family: nx.Graph, radius: dict) -> tuple[list, np.ndarray, np.ndarray]:
     """
-    Coordinates of one family, starting at (0, 0), in layout units.
+    One family's layout: (nodes, coordinates, (width, height)). The
+    coordinates start at (0, 0), counting each node's radius.
 
-    Kamada-Kawai places nodes so that their distances follow the number of
-    edges between them, which spreads a family evenly (a spring layout packs
-    dense communities into blobs). It compares all pairs of nodes, so large
-    families (> 150 nodes, only possible with a high family-size limit) use a
-    spring layout instead.
+    1. Kamada-Kawai places nodes so that their distances follow the number
+       of edges between them. It compares all pairs of nodes, so large
+       families (> 150 nodes, only possible with a high family-size limit)
+       use a spring layout instead.
+    2. Scaling: the median edge becomes EDGE_LENGTH long. Scaling on the
+       edges (not on the closest neighbours) keeps families compact: the
+       dense clusters of a family (many spectra of one lipid class) are
+       squeezed by Kamada-Kawai, and would otherwise blow up the long edges
+       between clusters.
+    3. ``spread_apart`` then opens the dense clusters just enough for every
+       node to fit (radius + NODE_GAP + neighbour's radius).
+    4. The family is rotated so that its longest axis is horizontal, which
+       packs better in the wide network plot.
     """
     nodes = list(family)
+    radii = np.array([radius[n] for n in nodes])
     if len(nodes) == 1:
-        return nodes, np.zeros((1, 2))
-    if len(nodes) <= 150:
-        positions = nx.kamada_kawai_layout(family, weight=None)
+        coords = np.zeros((1, 2))
     else:
-        positions = nx.spring_layout(family, seed=0, iterations=100)
-    coords = np.array([positions[n] for n in nodes])
-    # Scale so that the median distance to the nearest neighbour is NODE_SPACING.
-    dist = np.sqrt(((coords[:, None, :] - coords[None, :, :]) ** 2).sum(axis=-1))
-    np.fill_diagonal(dist, np.inf)
-    nearest = np.median(dist.min(axis=1))
-    coords = spread_apart(coords * NODE_SPACING / max(nearest, 1e-9), MIN_DISTANCE)
-    return nodes, coords - coords.min(axis=0)
+        if len(nodes) <= 150:
+            positions = nx.kamada_kawai_layout(family, weight=None)
+        else:
+            positions = nx.spring_layout(family, seed=0, iterations=100)
+        coords = np.array([positions[n] for n in nodes])
+        index = {node: i for i, node in enumerate(nodes)}
+        lengths = [np.linalg.norm(coords[index[u]] - coords[index[v]]) for u, v in family.edges()]
+        coords = coords * EDGE_LENGTH / max(np.median(lengths), 1e-9)
+        coords = spread_apart(coords, radii[:, None] + radii[None, :] + NODE_GAP)
+        # Principal axes (SVD of the centred coordinates): the first one becomes x.
+        centred = coords - coords.mean(axis=0)
+        _, _, axes = np.linalg.svd(centred, full_matrices=False)
+        coords = centred @ axes.T
+    low = (coords - radii[:, None]).min(axis=0)
+    high = (coords + radii[:, None]).max(axis=0)
+    return nodes, coords - low, high - low
 
 
-def layout(graph: nx.Graph) -> dict:
+def pack_rows(blocks: list, row_width: float, gap: float, top: float) -> tuple[dict, float]:
     """
-    Node -> (x, y). Each family gets its own layout (``family_layout``). The
-    families are placed row by row, largest first, like Cytoscape's grid of
-    components, and the singletons fill a compact grid underneath.
+    Place blocks (nodes, coordinates, size) left to right in rows of at most
+    ``row_width``, starting at height ``top`` and going down. Returns node ->
+    (x, y) and the height below the last row.
     """
-    families = sorted(nx.connected_components(graph), key=lambda g: (-len(g), min(g)))
-    blocks = [family_layout(graph.subgraph(f)) for f in families if len(f) > 1]
-    singletons = sorted(n for f in families if len(f) == 1 for n in f)
-
-    # Rows about 1.5 times wider than the whole is tall (the app's plot is wide).
-    sizes = [coords.max(axis=0) + FAMILY_GAP for _, coords in blocks]
-    area = sum(w * h for w, h in sizes) + len(singletons) * NODE_SPACING ** 2
-    row_width = max([math.sqrt(1.5 * area)] + [w for w, _ in sizes])
-
-    positions, x, y, row_height = {}, 0.0, 0.0, 0.0
-    for (nodes, coords), (width, height) in zip(blocks, sizes):
+    positions, x, y, row_height = {}, 0.0, top, 0.0
+    for nodes, coords, (width, height) in blocks:
         if x + width > row_width and x > 0:  # start a new row
-            x, y, row_height = 0.0, y - row_height, 0.0
+            x, y, row_height = 0.0, y - row_height - gap, 0.0
         for node, (u, v) in zip(nodes, coords):
             positions[node] = (x + u, y - v)
-        x += width
+        x += width + gap
         row_height = max(row_height, height)
+    return positions, y - row_height - gap
 
-    y -= row_height  # singletons below the last row of families
-    per_row = max(int(row_width // NODE_SPACING), 1)
-    for index, node in enumerate(singletons):
-        positions[node] = ((index % per_row) * NODE_SPACING, y - (index // per_row) * NODE_SPACING)
+
+def layout(graph: nx.Graph, radius: dict | None = None) -> dict:
+    """
+    Node -> (x, y). ``radius`` (node -> radius, layout units) is the largest
+    size each node can be drawn at; MEDIAN_RADIUS for all when not given.
+
+    Each family gets its own layout (``family_layout``). Families are placed
+    in rows, tallest first (the classic "shelf" packing, which wastes little
+    space), with the singletons in rows underneath, like Cytoscape's grid of
+    components.
+    """
+    radius = radius or {node: MEDIAN_RADIUS for node in graph}
+    families = sorted(nx.connected_components(graph), key=lambda g: (-len(g), min(g)))
+    blocks = [family_layout(graph.subgraph(f), radius) for f in families if len(f) > 1]
+    blocks.sort(key=lambda block: -block[2][1])
+    singletons = [family_layout(graph.subgraph(f), radius) for f in families if len(f) == 1]
+    singletons.sort(key=lambda block: (-block[2][1], block[0][0]))
+
+    # Rows about 1.5 times wider than the whole is tall (the app's plot is wide).
+    area = sum((w + FAMILY_GAP) * (h + FAMILY_GAP) for _, _, (w, h) in blocks)
+    area += sum((w + NODE_GAP) * (h + NODE_GAP) for _, _, (w, h) in singletons)
+    row_width = max([math.sqrt(1.5 * area)] + [w for _, _, (w, _) in blocks + singletons])
+
+    positions, bottom = pack_rows(blocks, row_width, FAMILY_GAP, top=0.0)
+    single, _ = pack_rows(singletons, row_width, NODE_GAP, top=bottom if blocks else 0.0)
+    positions.update(single)
     return positions
 
 
@@ -216,12 +276,14 @@ def build_network(
     features: pd.DataFrame,
     settings: NetworkSettings,
     excluded: set = frozenset(),
+    quant: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     The network: (nodes, edges) tables.
 
     ``features`` is ``results/features.parquet``; its features with MS2 are
-    the nodes. Features in ``excluded`` (blank features) get no spectral
+    the nodes. ``quant`` (``results/quant.parquet``) gives the per-sample
+    intensities, for the node sizes the layout must leave room for. Features in ``excluded`` (blank features) get no spectral
     edges; they are removed before the top-K step, so they take no place
     among anyone's best neighbours. Edge ``mz_delta`` is the precursor m/z
     difference (target - source), which hints at the chemical modification
@@ -253,7 +315,14 @@ def build_network(
         graph, weight="score", resolution=settings.louvain_resolution, seed=0
     )
     community = number_groups(communities)
-    positions = layout(graph)
+
+    # The layout leaves room for each node's largest size in the app: its
+    # size by mean intensity, or by its intensity in any one sample.
+    mean = features.set_index("feature_id")["intensity"].reindex(node_ids)
+    largest = mean.to_numpy()
+    if quant is not None:
+        largest = np.fmax(largest, quant.set_index("feature_id").reindex(node_ids).max(axis=1).to_numpy())
+    positions = layout(graph, dict(zip(node_ids, node_radius(largest, size_reference(mean)))))
     nodes = pd.DataFrame({
         "feature_id": node_ids,
         "family": [family.get(n, -1) for n in node_ids],
@@ -290,9 +359,10 @@ def run_network(
     edges; empty when it may have them).
     """
     features = pd.read_parquet(features_file)
-    ratios = blank_ratios(pd.read_parquet(quant_file), read_samples(samples_file))
+    quant = pd.read_parquet(quant_file)
+    ratios = blank_ratios(quant, read_samples(samples_file))
     blank = set(ratios.index[ratios > max_blank_ratio])  # empty without blanks (NaN ratios)
-    nodes, edges = build_network(pd.read_parquet(candidates_file), features, settings, excluded=blank)
+    nodes, edges = build_network(pd.read_parquet(candidates_file), features, settings, excluded=blank, quant=quant)
 
     qc = pd.read_parquet(qc_file)
     nodes = nodes.merge(qc, on="feature_id", how="left")

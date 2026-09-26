@@ -5,6 +5,7 @@ import shutil
 import socket
 import sys
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -12,7 +13,6 @@ from atlas_ms.app.data import ChromatogramReader, load_results, read_mgf
 from atlas_ms.app.main import AtlasApp, free_port
 from atlas_ms.app.run_view import RunPanel
 from atlas_ms.app.setup_view import SetupTab
-from atlas_ms.network.graph import MIN_DISTANCE
 from atlas_ms.project import Project
 from test_workflow import feature_of
 
@@ -62,11 +62,15 @@ def test_network_and_table_share_the_selection(processed_project):
     network.selected = [5]
     assert type(network.details().objects[-1]).__name__ == "Alert"
     # Every colouring and every node size (one per sample) can be computed,
-    # and no node is wider than the minimum distance between two nodes.
+    # and with every size, no two nodes overlap.
+    coords = network.nodes[["x", "y"]].to_numpy()
+    dist = np.sqrt(((coords[:, None] - coords[None]) ** 2).sum(-1))
+    np.fill_diagonal(dist, np.inf)
     for color in network.param.color_by.objects:
         for size in network.param.size_by.objects:
             network._points(color, size)
-            assert 2 * network._radii(size).max() < MIN_DISTANCE
+            radii = network._radii(size)
+            assert (dist > radii[:, None] + radii[None, :]).all()
     assert "treat_2" in network.param.size_by.objects
 
 
