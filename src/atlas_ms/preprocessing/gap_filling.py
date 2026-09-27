@@ -166,9 +166,12 @@ def extract_targets(
         # m/z as (mass + charge * proton) / |charge|. Any mass that gives back
         # the observed m/z works, even if the ion is not a protonated molecule.
         mass = target.mz * abs(charge) - charge * PROTON_MASS
-        # The measured isotope pattern. Without a formula, OpenMS would
-        # otherwise fall back to a peptide model (and log an error per target).
-        isotopes = [float(p) for p in str(target.isotopes).split(";") if p not in ("", "nan")] or [0.0]
+        # The measured isotope pattern. Without a formula or a pattern,
+        # OpenMS would estimate one with its *peptide* model (averagine),
+        # which does not suit small molecules. A feature always has a
+        # measured pattern; if one were missing, only the monoisotopic trace
+        # is extracted ([1.0]).
+        isotopes = [float(p) for p in str(target.isotopes).split(";") if p not in ("", "nan")] or [1.0]
         # Arguments: name, formula (unknown), mass, charges, RTs, RT ranges
         # (0 = use the extraction window), isotope pattern.
         library.append(oms.FeatureFinderMetaboIdentCompound(

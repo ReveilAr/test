@@ -4,29 +4,34 @@ Spectral libraries (matchms): harmonization, then identity search.
 Three steps, so that a large library is read once per project and not at
 every search:
 
-1. ``prepare_library`` reads one library file (MSP, MGF, or JSON in the GNPS
-   format) and harmonizes it, in the spirit of FragHub (Dablanc et al.
+1. ``prepare_library`` reads one library file (MSP, MGF, or JSON from GNPS,
+   MoNA or MassBank: see ``library_files``) and harmonizes it, in the spirit of FragHub (Dablanc et al.
    2024), with matchms's own metadata-cleaning filters (all offline):
 
    * metadata: field names (``Name`` / ``TITLE`` / ``compound_name``...),
      adduct notation (``M+H`` -> ``[M+H]+``), ion mode, precursor m/z,
      retention time; values stored in the wrong field (an adduct inside the
      name...) are moved to the right one;
-   * structures: missing SMILES / InChI / InChIKey / formula derived from
-     each other (RDKit); for spectra with a structure, annotations that
-     contradict the precursor mass are repaired (wrong adduct, salt,
-     molar instead of monoisotopic mass...) or, if they cannot be, the
-     spectrum is removed: a spectrum whose structure does not fit its
-     precursor would give confident but wrong hits;
-   * spectra kept: the project's ion mode (or unknown), with a precursor
-     m/z, centroided, with at least ``min_library_peaks`` fragments after
-     the same cleaning as the feature spectra (``network.spectra
-     .clean_peaks``: precursor region removed, intensities normalised);
+   * spectra kept: MS2 spectra of the project's ion mode (or unknown), with
+     a precursor m/z, centroided, with at least ``min_library_peaks``
+     fragments after the same cleaning as the feature spectra
+     (``network.spectra.clean_peaks``: precursor region removed,
+     intensities normalised);
    * in-silico spectra are recognised by their metadata ("in silico",
      "predicted", "LipidBlast", "CFM-ID"...), so that a mixed download
-     (e.g. from MoNA) does not pass predicted spectra off as measured ones.
+     (e.g. from MoNA) does not pass predicted spectra off as measured ones;
+   * structures (measured spectra only): missing SMILES / InChI / InChIKey /
+     formula derived from each other (RDKit); annotations that contradict
+     the precursor mass are repaired (wrong adduct, salt, molar instead of
+     monoisotopic mass...) or, if they cannot be, the spectrum is removed:
+     a spectrum whose structure does not fit its precursor would give
+     confident but wrong hits. These checks are the slow part, so they run
+     once per distinct annotation (``checked_structure``).
 
-   What every filter removed or changed is reported (``library_cleaning.tsv``).
+   Each spectrum goes through the filters once, changed in place: matchms's
+   own ``SpectrumProcessor`` report copies every spectrum at every filter,
+   which made a 227,000-spectrum library take over an hour. What each step
+   removed is reported (``library_cleaning.tsv``).
 2. ``combine_libraries`` merges the libraries into one table and removes
    duplicates: the same spectrum (same precursor, adduct and fragments) found
    in several libraries is kept once, from the library that gives the most
@@ -47,18 +52,23 @@ Confidence levels proposed for a hit (see ``schema.py``):
   predicted spectrum is weaker evidence than with a measured one.
 """
 
+import inspect
 import logging
-from itertools import islice
+import re
+from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from matchms import Spectrum, SpectrumProcessor
+from matchms import Spectrum
 from matchms import filtering as msfilters
 from matchms.filtering import default_pipelines
-from matchms.importing import load_spectra
+from matchms.logging_functions import set_matchms_logger_level
 from matchms.similarity import CosineGreedy
+from rdkit import RDLogger
 
+from atlas_ms.annotation.library_files import read_library
 from atlas_ms.annotation.schema import candidate_table, empty_table, to_json
 from atlas_ms.config import LibrarySearchSettings
 from atlas_ms.network.spectra import clean_peaks, load_feature_spectra
@@ -75,7 +85,7 @@ IN_SILICO_WORDS = ("in silico", "in-silico", "insilico", "predicted", "theoretic
                    "cfm-id", "cfmid", "virtual spectrum")
 # Metadata fields not searched for those words (names and structures).
 IDENTITY_FIELDS = {"compound_name", "smiles", "inchi", "inchikey", "formula", "adduct"}
-BATCH = 10_000  # spectra harmonized at a time (memory stays low for large libraries)
+LOG_EVERY = 10_000  # progress message every ... spectra read
 
 
 # ---- Custom filters (matchms style: spectrum in, spectrum or None out) --------
@@ -86,6 +96,18 @@ def keep_ion_mode(spectrum_in, polarity: str, clone: bool = True):
         return None
     ionmode = str(spectrum_in.get("ionmode") or "").lower()
     return None if ionmode in ("positive", "negative") and ionmode != polarity else spectrum_in
+
+
+def keep_ms2(spectrum_in, clone: bool = True):
+    """
+    Remove spectra recorded at another MS level (MS1 or EI reference spectra,
+    MS3...), which public libraries such as MassBank also hold; keep those
+    without one.
+    """
+    if spectrum_in is None:
+        return None
+    level = str(spectrum_in.get("ms_level") or "").strip().upper()
+    return spectrum_in if level in ("", "2", "MS2") else None
 
 
 def repair_structure_annotation(spectrum_in, clone: bool = True):
@@ -133,9 +155,27 @@ REPAIR_STEPS = [step for step in default_pipelines.REPAIR_ANNOTATION
                 if _name(step) != "derive_annotation_from_compound_name"]
 
 
-def library_filters(polarity: str, precursor_window_da: float, min_peaks: int, repair: bool) -> list:
-    """The harmonization pipeline (see the module docstring), in order."""
-    metadata = [
+def _step(item) -> tuple:
+    """
+    (name, function, arguments) of a filter given as ``function`` or
+    ``(function, arguments)``. The spectra come straight from the file, so
+    the filters may change them in place: ``clone=False`` saves a copy of
+    the spectrum at every step (matchms's default).
+    """
+    function, kwargs = item if isinstance(item, tuple) else (item, {})
+    if "clone" in inspect.signature(function).parameters:
+        kwargs = {**kwargs, "clone": False}
+    return function.__name__, function, kwargs
+
+
+def cleaning_steps(polarity: str, precursor_window_da: float, min_peaks: int) -> list[tuple]:
+    """
+    The metadata and peak filters, in order (see the module docstring). The
+    filters that remove spectra come early: every spectrum they remove is
+    one less for the slow structure checks (``check_structure``), which
+    come after them.
+    """
+    filters = [
         *default_pipelines.HARMONIZE_METADATA_FIELD_NAMES,
         # Not derive_formula_from_name: it takes lipid abbreviations such as
         # "POPC" for formulas and removes them from the name.
@@ -144,17 +184,75 @@ def library_filters(polarity: str, precursor_window_da: float, min_peaks: int, r
         *default_pipelines.HARMONIZE_METADATA_ENTRIES,
         msfilters.require_precursor_mz,
         (keep_ion_mode, {"polarity": polarity}),
-    ]
-    structures = [*default_pipelines.DERIVE_MISSING_METADATA, repair_structure_annotation] if repair else []
-    peaks = [
+        keep_ms2,
         msfilters.remove_profiled_spectra,
         (msfilters.remove_peaks_around_precursor_mz, {"mz_tolerance": precursor_window_da}),
         (msfilters.reduce_to_number_of_peaks, {"n_max": 500}),
         msfilters.normalize_intensities,
         (msfilters.require_minimum_number_of_peaks, {"n_required": min_peaks}),
+        mark_in_silico,
     ]
-    return [*metadata, *structures, *peaks, mark_in_silico]
+    return [_step(item) for item in filters]
 
+
+# ---- Structure checks (RDKit), once per distinct annotation ---------------------
+
+# The metadata the structure checks read and write. They use nothing else
+# (checked in the matchms 0.33 sources of every filter involved).
+STRUCTURE_FIELDS = ("precursor_mz", "adduct", "charge", "ionmode", "parent_mass",
+                    "smiles", "inchi", "inchikey", "formula")
+# Those that make the annotation (a change is counted in the report).
+ANNOTATION_FIELDS = {"adduct", "smiles", "inchi", "inchikey", "formula"}
+# Missing SMILES / InChI / InChIKey / formula derived from each other, then the repairs.
+STRUCTURE_STEPS = [_step(item) for item in (*default_pipelines.DERIVE_MISSING_METADATA,
+                                            repair_structure_annotation)]
+
+
+@lru_cache(maxsize=200_000)
+def checked_structure(fields: tuple) -> tuple | None:
+    """
+    The structure checks applied to the ``STRUCTURE_FIELDS`` values
+    ``fields``: the checked (completed or repaired) values, or None when the
+    structure does not fit the precursor.
+
+    The checks are slow: RDKit parses each structure several times, a few
+    milliseconds per spectrum. Libraries record each compound many times
+    (collision energies, instruments: BMDMS-NP has about 80 spectra per
+    compound), with the same annotation. Since the result depends only on
+    these fields, it is computed once per distinct annotation and remembered
+    (``lru_cache``).
+    """
+    metadata = {key: value for key, value in zip(STRUCTURE_FIELDS, fields) if value is not None}
+    # A spectrum without peaks: the checks only look at the metadata.
+    spectrum = Spectrum(mz=np.empty(0), intensities=np.empty(0), metadata=metadata, metadata_harmonization=False)
+    for _, function, kwargs in STRUCTURE_STEPS:
+        spectrum = function(spectrum, **kwargs)
+        if spectrum is None:
+            return None
+    return tuple(spectrum.get(key) for key in STRUCTURE_FIELDS)
+
+
+def check_structure(spectrum: Spectrum) -> tuple[Spectrum | None, bool]:
+    """
+    Structure checks of one spectrum (``checked_structure``). Returns the
+    spectrum (None if removed) and whether its annotation was completed or
+    repaired.
+    """
+    # Values that are not text or numbers (rare) are compared as text.
+    fields = tuple(value if value is None or isinstance(value, (str, int, float)) else str(value)
+                   for value in (spectrum.get(key) for key in STRUCTURE_FIELDS))
+    checked = checked_structure(fields)
+    if checked is None:
+        return None, False
+    changed = False
+    for key, before, after in zip(STRUCTURE_FIELDS, fields, checked):
+        if after != before:
+            spectrum.set(key, after)
+            changed = changed or key in ANNOTATION_FIELDS
+    return spectrum, changed
+
+
+# ---- Preparing one library -------------------------------------------------------
 
 def _text(spectrum: Spectrum, key: str) -> str:
     value = spectrum.get(key)
@@ -180,37 +278,67 @@ def _row(spectrum: Spectrum, rt_unit: str) -> dict:
 
 
 def prepare_library(path: str | Path, polarity: str, precursor_window_da: float, rt_unit: str = "min",
-                    min_peaks: int = 2, repair: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
+                    min_peaks: int = 2, repair: bool = True,
+                    in_silico: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Read and harmonize one library file (see the module docstring).
     Retention times are converted to seconds (``rt_unit``: "min" or "s").
+
+    The structure checks (``repair``) are skipped for predicted spectra (the
+    whole library if ``in_silico``, otherwise the spectra whose metadata say
+    so): their structure is the input of the prediction, so it fits their
+    precursor by construction.
+
     Returns the library table, sorted by precursor m/z, and the cleaning
-    report: spectra removed and changed by each filter.
+    report: spectra removed by each step, and spectra changed by the steps
+    where changes are counted (the in-silico marking and the structure
+    checks; counting them at every step would slow the cleaning down).
     """
-    processor = SpectrumProcessor(library_filters(polarity, precursor_window_da, min_peaks, repair))
-    spectra = iter(load_spectra(str(path)))
-    rows, report, n_read = [], None, 0
-    while batch := list(islice(spectra, BATCH)):
-        n_read += len(batch)
-        cleaned, batch_report = processor.process_spectra(batch, progress_bar=False, create_report=True)
-        rows += [_row(spectrum, rt_unit) for spectrum in cleaned]
-        frame = batch_report.to_dataframe()
-        report = frame if report is None else report.add(frame, fill_value=0)
-        log.info("%s: %d spectra read, %d kept so far", Path(path).name, n_read, len(rows))
-    report = (report if report is not None else pd.DataFrame(
-        columns=["removed spectra", "changed metadata", "changed mass spectrum"])).astype(int)
-    report = report.rename_axis("step").reset_index()
-    report.insert(0, "spectra read", n_read)
+    # matchms and RDKit warn about every odd record: thousands of lines for
+    # a public library. What the cleaning did is in the report instead.
+    set_matchms_logger_level("ERROR")
+    RDLogger.DisableLog("rdApp.*")
+    name = Path(path).name
+    steps = cleaning_steps(polarity, precursor_window_da, min_peaks)
+    removed, rows = Counter(), []
+    n_read = n_repaired = 0
+    for spectrum in read_library(path):
+        n_read += 1
+        for step, function, kwargs in steps:
+            spectrum = function(spectrum, **kwargs)
+            if spectrum is None:
+                removed[step] += 1
+                break
+        if (spectrum is not None and repair and not (in_silico or spectrum.get("in_silico"))
+                and (spectrum.get("smiles") or spectrum.get("inchi"))):
+            spectrum, changed = check_structure(spectrum)
+            removed["repair_structure_annotation"] += spectrum is None
+            n_repaired += changed
+        if spectrum is not None:
+            rows.append(_row(spectrum, rt_unit))
+        if n_read % LOG_EVERY == 0:
+            log.info("%s: %d spectra read, %d kept so far", name, n_read, len(rows))
+    if n_read == 0:
+        raise ValueError(f"No spectrum could be read from {name}. Supported formats: MSP, MGF, "
+                         "and JSON from GNPS, MoNA or MassBank.")
+
     library = pd.DataFrame(rows, columns=LIBRARY_COLUMNS).sort_values("precursor_mz", ignore_index=True)
-    log.info("%s: %d of %d spectra kept, %d marked in silico", Path(path).name, len(library), n_read,
-             int(library["in_silico"].sum()))
+    n_in_silico = int(library["in_silico"].sum())
+    step_names = [step for step, _, _ in steps] + (["repair_structure_annotation"] if repair else [])
+    report = pd.DataFrame({"step": step_names, "removed spectra": [removed[step] for step in step_names]})
+    report["changed spectra"] = report["step"].map({"mark_in_silico": n_in_silico,
+                                                    "repair_structure_annotation": n_repaired})
+    report.insert(0, "spectra read", n_read)
+    log.info("%s: %d of %d spectra kept, %d marked in silico, %d structure annotations completed or repaired "
+             "(%d distinct annotations checked)", name, len(library), n_read, n_in_silico, n_repaired,
+             checked_structure.cache_info().currsize)
     return library, report
 
 
 def run_prepare_library(path, out, report_out, polarity: str, precursor_window_da: float, rt_unit: str,
-                        min_peaks: int, repair: bool) -> None:
+                        min_peaks: int, repair: bool, in_silico: bool = False) -> None:
     """File-level entry point of the ``prepare_library`` rule."""
-    library, report = prepare_library(path, polarity, precursor_window_da, rt_unit, min_peaks, repair)
+    library, report = prepare_library(path, polarity, precursor_window_da, rt_unit, min_peaks, repair, in_silico)
     library.to_parquet(out, index=False)
     report.to_csv(report_out, sep="\t", index=False)
 
@@ -264,11 +392,46 @@ def combine_libraries(tables: list[pd.DataFrame], entries: list[dict], remove_du
     return combined.sort_values("precursor_mz", ignore_index=True), summary
 
 
+def write_library_mgf(library: pd.DataFrame, path: str | Path) -> None:
+    """
+    The combined, harmonized library (``combine_libraries``) as an MGF file,
+    to browse it or use it elsewhere; ATLAS-MS also reads it back as a
+    library. The keys are those of GNPS library MGF files, plus ``LIBRARY``
+    (where the spectrum comes from) and ``KIND`` (experimental or in_silico).
+
+    The peaks are the ones searched: cleaned like the feature spectra
+    (precursor region removed, at most 500 peaks), with intensities relative
+    to the base peak (1.0). Charge and ion mode come from the adduct.
+    Retention times are in seconds (``RTINSECONDS``, as in GNPS files): give
+    it ``rt_unit`` = "s" when using it as a library.
+    """
+    with open(path, "w") as out:
+        for number, row in enumerate(library.itertuples(index=False), start=1):
+            name = " ".join(str(row.name).split())  # no line breaks inside a field
+            lines = ["BEGIN IONS", f"TITLE={name}", f"PEPMASS={row.precursor_mz:.6f}"]
+            charge = re.search(r"\](\d*)([+-])$", row.adduct)  # "[M+H]+" -> ("", "+")
+            if charge:
+                polarity = "Positive" if charge[2] == "+" else "Negative"
+                lines += [f"CHARGE={charge[1] or 1}{charge[2]}", f"IONMODE={polarity}"]
+            fields = {"NAME": name, "ADDUCT": row.adduct, "FORMULA": row.formula, "SMILES": row.smiles,
+                      "INCHIKEY": row.inchikey, "SPECTRUMID": row.library_id, "LIBRARY": row.library,
+                      "KIND": row.kind}
+            lines += [f"{key}={value}" for key, value in fields.items() if value]
+            if not np.isnan(row.rt_s):
+                lines.append(f"RTINSECONDS={row.rt_s:.2f}")
+            lines.append(f"SCANS={number}")
+            lines += [f"{mz:.5f}\t{intensity:.4f}" for mz, intensity in zip(row.mz, row.intensity)]
+            lines += ["END IONS", ""]
+            out.write("\n".join(lines) + "\n")
+
+
 def run_combine_libraries(library_files: list, report_files: list, entries: list[dict], out,
-                          summary_out, cleaning_out, remove_duplicates: bool) -> None:
+                          summary_out, cleaning_out, remove_duplicates: bool, mgf_out=None) -> None:
     """File-level entry point of the ``combine_libraries`` rule."""
     tables = [pd.read_parquet(path) for path in library_files]
     combined, summary = combine_libraries(tables, entries, remove_duplicates)
+    if mgf_out is not None:
+        write_library_mgf(combined, mgf_out)
     reports = [pd.read_csv(path, sep="\t").assign(library=entry["name"]) for path, entry in zip(report_files, entries)]
     cleaning = pd.concat(reports, ignore_index=True) if reports else pd.DataFrame(columns=["library", "spectra read"])
     read = cleaning.groupby("library")["spectra read"].first()

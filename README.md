@@ -66,13 +66,26 @@ sends the file's content, not its location, so a dropped file is copied
 (into the project's `raw/` or `libraries/` folder, or the model cache).
 Typing a path uses the file where it is (better for many large raw files).
 
-**Spectral libraries** (MSP, MGF or GNPS JSON) are added in the Setup tab.
-Each is harmonized once, in the spirit of FragHub: metadata names and
-adducts unified, missing structure identifiers derived, annotations that
-contradict their precursor repaired or removed, predicted spectra
-recognised, and spectra present in several libraries kept once. What was
-removed or changed is in `results/annotations/library_cleaning.tsv` and
+**Spectral libraries** are added in the Setup tab. Formats: MSP, MGF, or
+JSON from GNPS, MoNA (e.g. `MoNA-export-LipidBlast.json`) or MassBank
+(`MassBank.json`). Keep the RT unit at "min" for MoNA and MassBank.
+Each is harmonized once per project, in the spirit of FragHub:
+- metadata names and adducts are unified;
+- missing structure identifiers are derived;
+- annotations that contradict their precursor are repaired or removed;
+- predicted spectra are recognised;
+- spectra present in several libraries are kept once.
+
+A 200,000-spectrum library takes a few minutes. What was removed or
+changed is in `results/annotations/library_cleaning.tsv` and
 `library_summary.tsv` (also shown in the Setup tab).
+
+The harmonized library itself is written to
+`results/annotations/harmonized_library.mgf`, with GNPS-style keys plus
+`LIBRARY` and `KIND`. You can browse it or use it elsewhere. To give it
+back to ATLAS-MS as a library, set its RT unit to "s" (the key is
+RTINSECONDS). Its peaks are the ones searched: precursor region removed,
+intensities relative to the base peak.
 Mark a library as *reference standards* only if its spectra were measured
 on your own method, with retention times: only those can give level 1.
 In-silico libraries (e.g. LipidBlast) give at most level 3.

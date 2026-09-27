@@ -194,7 +194,7 @@ CAFFEINE = "Cn1cnc2c1c(=O)n(C)c(=O)n2C"
 
 def test_library_harmonization(tmp_path):
     """FragHub-like clean-up of two messy libraries, and duplicates between them."""
-    from atlas_ms.annotation.libraries import combine_libraries, prepare_library
+    from atlas_ms.annotation.libraries import combine_libraries, prepare_library, write_library_mgf
     from synthetic import LibraryEntry, write_msp
 
     pc_peaks = [(104.107, 5.0), (184.0733, 100.0), (577.519, 3.0)]
@@ -231,3 +231,53 @@ def test_library_harmonization(tmp_path):
     assert sorted(zip(combined["library"], combined["name"], combined["kind"])) == [
         ("messy", "LPC 16:0", "in_silico"), ("standards", "PC 16:0_18:1", "experimental")]
     assert summary.set_index("library")["duplicates removed"].to_dict() == {"messy": 1, "standards": 0}
+
+    # The harmonized library as MGF, read back as a library (RTINSECONDS: rt_unit "s").
+    mgf = tmp_path / "harmonized.mgf"
+    write_library_mgf(combined, mgf)
+    text = mgf.read_text()
+    assert text.count("BEGIN IONS") == 2 and "LIBRARY=standards" in text and "KIND=in_silico" in text
+    again, _ = prepare_library(mgf, "positive", 17.0, rt_unit="s")
+    assert sorted(again["name"]) == sorted(combined["name"])
+    assert again.set_index("name").loc["PC 16:0_18:1", "rt_s"] == pytest.approx(180.0)
+
+
+def test_json_libraries(tmp_path):
+    """MoNA and MassBank JSON (matchms reads neither), GNPS JSON, streamed in small chunks."""
+    from atlas_ms.annotation.library_files import json_records
+    from atlas_ms.annotation.libraries import prepare_library
+    from synthetic import LibraryEntry, massbank_record, mona_record, write_json
+
+    pc_peaks = [(104.107, 5.0), (184.0733, 100.0), (577.519, 3.0)]
+    pc = LibraryEntry("PC 16:0_18:1", 760.5851, "[M+H]+", "", pc_peaks, rt_min=3.0, smiles=POPC)
+    lpc = LibraryEntry("LPC 16:0", 496.3398, "[M+H]+", "C24H50NO7P", [(104.107, 30.0), (184.0733, 100.0)])
+    mona = write_json(tmp_path / "mona.json", [mona_record(pc), mona_record(lpc, tags=("LipidBlast", "In-Silico"))])
+
+    # The records come back whole, whatever the chunk size.
+    assert [r["id"] for r in json_records(mona, chunk_chars=50)] == [r["id"] for r in json_records(mona)]
+
+    table, report = prepare_library(mona, "positive", 17.0)
+    rows = table.set_index("name")
+    assert rows["in_silico"].to_dict() == {"LPC 16:0": True, "PC 16:0_18:1": False}  # from the MoNA tags
+    assert rows.loc["PC 16:0_18:1", "formula"] == "C42H82NO8P"  # derived from the SMILES
+    assert rows.loc["PC 16:0_18:1", "rt_s"] == pytest.approx(180.0)  # "3.0 min"
+    assert rows.loc["PC 16:0_18:1", "adduct"] == "[M+H]+"
+    assert report.set_index("step").loc["mark_in_silico", "changed spectra"] == 1
+
+    massbank = write_json(tmp_path / "MassBank.json", [
+        massbank_record(pc, "MSBNK-test-00001"),
+        massbank_record(lpc, "MSBNK-test-00002", ms_type="MS"),  # an MS1 spectrum: removed
+        {"ACCESSION": "MSBNK-test-00003", "DEPRECATED": True, "DEPRECATED_CONTENT": "..."},  # skipped
+        # A GNPS record in the same file (its own JSON format).
+        {"Compound_Name": "LPC 16:0", "Precursor_MZ": "496.3398", "Adduct": "M+H", "Ion_Mode": "Positive",
+         "peaks_json": "[[104.107, 30.0], [184.0733, 100.0]]", "spectrum_id": "CCMSLIB00000000001"},
+    ])
+    table, report = prepare_library(massbank, "positive", 17.0)
+    assert list(table["library_id"]) == ["CCMSLIB00000000001", "MSBNK-test-00001"]
+    assert table.loc[1, "rt_s"] == pytest.approx(180.0)  # "180.0 sec"
+    assert report.set_index("step").loc["keep_ms2", "removed spectra"] == 1
+    assert (report["spectra read"] == 3).all()
+
+    # A file with no readable spectrum is an error, not an empty library.
+    with pytest.raises(ValueError, match="No spectrum could be read"):
+        prepare_library(write_json(tmp_path / "other.json", [{"something": "else"}]), "positive", 17.0)

@@ -19,6 +19,7 @@ DDA run to exercise the whole preprocessing chain:
 Everything is deterministic (fixed random seed) so tests are reproducible.
 """
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -243,4 +244,49 @@ def write_msp(path: str | Path, entries: list[LibraryEntry]) -> Path:
         lines.append("")
     path = Path(path)
     path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def mona_record(entry: LibraryEntry, tags: tuple[str, ...] = ()) -> dict:
+    """One library entry as a record of a MoNA JSON export (their layout, few fields)."""
+    compound_metadata = [{"name": "molecular formula", "value": entry.formula, "computed": False}]
+    if entry.smiles:
+        compound_metadata.append({"name": "SMILES", "value": entry.smiles, "computed": True})
+    metadata = [{"name": "precursor m/z", "value": entry.precursor_mz},
+                {"name": "precursor type", "value": entry.adduct},
+                {"name": "ionization mode", "value": entry.ionmode.lower()},
+                {"name": "ms level", "value": "MS2"}]
+    if entry.rt_min is not None:
+        metadata.append({"name": "retention time", "value": f"{entry.rt_min} min"})
+    return {
+        "id": f"MONA{abs(hash(entry.name)) % 10**6:06d}",
+        "compound": [{"names": [{"name": entry.name, "score": 0.0}], "metaData": compound_metadata}],
+        "metaData": metadata,
+        "spectrum": " ".join(f"{mz}:{intensity}" for mz, intensity in entry.peaks),
+        "tags": [{"ruleBased": False, "text": tag} for tag in tags],
+        "library": {"library": "MoNA test"},
+    }
+
+
+def massbank_record(entry: LibraryEntry, accession: str, ms_type: str = "MS2") -> dict:
+    """One library entry as a record of MassBank.json (MassBank record-format keys, as text)."""
+    record = {
+        "ACCESSION": accession,
+        "CH$NAME": [entry.name],
+        "CH$FORMULA": entry.formula,
+        "CH$SMILES": entry.smiles or "N/A",
+        "AC$MASS_SPECTROMETRY_MS_TYPE": ms_type,
+        "AC$MASS_SPECTROMETRY_ION_MODE": entry.ionmode.upper(),
+        "MS$FOCUSED_ION": {"PRECURSOR_M/Z": str(entry.precursor_mz), "PRECURSOR_TYPE": entry.adduct},
+        "PK$PEAK": [[str(mz), str(intensity), "999"] for mz, intensity in entry.peaks],
+    }
+    if entry.rt_min is not None:
+        record["AC$CHROMATOGRAPHY"] = {"RETENTION_TIME": f"{entry.rt_min * 60} sec"}
+    return record
+
+
+def write_json(path: str | Path, records: list[dict]) -> Path:
+    """A JSON library: one list of records."""
+    path = Path(path)
+    path.write_text(json.dumps(records, indent=1))
     return path

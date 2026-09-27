@@ -12,4 +12,5 @@ run_combine_libraries(
     summary_out=snakemake.output.summary,
     cleaning_out=snakemake.output.cleaning,
     remove_duplicates=snakemake.params.remove_duplicates,
+    mgf_out=snakemake.output.mgf,
 )

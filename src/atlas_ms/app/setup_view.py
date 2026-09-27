@@ -194,13 +194,14 @@ class SetupTab:
             self.adducts,
             pn.Row(add_adduct, remove_adducts),
             pn.pane.Markdown("### Spectral libraries\n"
-                             "MSP, MGF or GNPS JSON files (full paths). Only libraries of reference standards "
+                             "MSP, MGF, or JSON from GNPS, MoNA or MassBank (full paths). Only libraries of reference standards "
                              "measured on your method, with retention times, can give level 1."),
             self.libraries,
             pn.Row(add_library, remove_libraries),
             self.library_drop,
             pn.pane.Markdown("Last harmonization (spectra read, cleaned, marked in silico, duplicates removed, "
-                             "searched; details in `results/annotations/library_cleaning.tsv`):"),
+                             "searched; details in `results/annotations/library_cleaning.tsv`; the harmonized library "
+                             "itself: `results/annotations/harmonized_library.mgf`):"),
             self.library_summary,
             pn.pane.Markdown("### Models\nInstead of the automatic downloads (e.g. without internet access)."),
             pn.Row(self.ms2deepscore_drop, self.ms2query_drop, sizing_mode="stretch_width"),

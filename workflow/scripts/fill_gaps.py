@@ -1,4 +1,8 @@
-"""Rule `fill_gaps`: targeted re-extraction of missing features in one run."""
+"""
+Rule `fill_gaps`: targeted re-extraction of missing features in one run,
+then adduct grouping and MS2 mapping of the merged features
+(annotate.attach_ms2).
+"""
 # `snakemake` is provided by Snakemake's script directive.
 import os
 

@@ -76,6 +76,29 @@ keeps the decisions and the rules every session must follow.
   Quit button (frees the port); parallel work: `--cores` = all available
   by default, memory-aware scheduling, one OpenMP thread per job;
   `atlas-ms cache`.
+- **Next round (done), after the user's first library run:**
+  - Library preparation took hours: BMDMS-NP (227,000 spectra) took 80 min,
+    and MassBank.json / MoNA-export-LipidBlast.json gave 0 spectra
+    (matchms only reads GNPS JSON).
+  - Fixes:
+    - own filter loop, no matchms `SpectrumProcessor` report, which copies
+      each spectrum at every filter;
+    - cheap removals first;
+    - RDKit structure checks cached per distinct annotation
+      (`libraries.checked_structure`) and skipped for predicted spectra;
+    - matchms / RDKit warnings silenced.
+  - About 10× faster (1.7 ms per spectrum here).
+  - `annotation/library_files.py` streams JSON and reads MoNA and MassBank
+    records. A library giving no spectrum is an error.
+  - `results/annotations/harmonized_library.mgf` is written by
+    `combine_libraries`.
+  - The user asked for no proteomics tools:
+    - IDMapper (MS2 stored as peptide identifications) is replaced by
+      `annotate.attach_ms2` (spectrum indices in the feature meta value
+      `ms2_spectra`);
+    - GNPSMGFFile is replaced by `export.write_mgf` (same fields);
+    - the FFMI fallback pattern is `[1.0]` (monoisotopic trace), not
+      `[0.0]`, which triggered the peptide model.
 - **Name:** ATLAS-MS is a placeholder (Python package `atlas_ms`, command
   `atlas-ms`). The repo is private and licensing is decided later.
 
@@ -129,11 +152,21 @@ keeps the decisions and the rules every session must follow.
   bacterial classes (e.g. PE, PG, cardiolipins, lyso forms, ornithine lipids,
   glycolipids), not only the mammalian ones.
 - **Preprocessing:** UmetaFlow is the base, ported from its OpenMS command-line
-  tools to pyOpenMS. Its step order is kept: FFM → align → decharge → IDMapper →
-  link → FeatureFinderMetaboIdent gap filling → re-link → export. Two
-  deviations, both fixing data loss:
+  tools to pyOpenMS. Its step order is kept: FFM → align → decharge → MS2
+  mapping → link → FeatureFinderMetaboIdent gap filling → re-link → export.
+  **No proteomics tools** (the user's request): UmetaFlow's IDMapper and
+  GNPSMGFFile store MS2 spectra as peptide identifications, so both are
+  replaced:
+  - `annotate.attach_ms2` uses the same tolerances (±5 s around the
+    feature's RT extent, 20 ppm), picks the closest m/z instead of the
+    first feature, and treats charge 0 as unknown;
+  - `export.write_mgf` writes the same fields as GNPSMGFFile. It takes the
+    most intense run's highest-TIC spectrum; `merged_spectra` merges
+    similar spectra (normalised, 0.02 Da).
+
+  Two more deviations, both fixing data loss:
   - MS2 spectra without peaks are not attached to features
-    (`annotate.drop_empty_ms2`);
+    (`annotate.attach_ms2`);
   - **Gap filling only fills gaps** (`gap_filling.merge_gap_filled`).
     Detected features are never replaced by re-extracted ones: re-extraction
     can pick a neighbouring isomer. Re-extracted values are added only where
@@ -215,9 +248,11 @@ keeps the decisions and the rules every session must follow.
 - **MassTraceDetection** loses most traces when some MS1 scans have no peak
   above `noise_threshold_int`. `msdata.ms1_experiment(min_intensity=...)`
   drops those scans first, which is harmless.
-- **IDMapper** labels its identification run `UNKNOWN_SEARCH_RUN_IDENTIFIER`
-  in every file, and the linked consensusXML then can't be saved. Pass a
-  `ProteinIdentification` with a unique identifier (the sample name).
+- **IDMapper** (no longer used): it labels its identification run
+  `UNKNOWN_SEARCH_RUN_IDENTIFIER` in every file, and the linked
+  consensusXML then can't be saved. It gives each MS2 spectrum to the
+  *first* matching feature only, and requires equal precursor / feature
+  charges.
 - **Getters that fill a list:** `FeatureMap.getPrimaryMSRunPath(list)` (and
   similar getters) fill a list argument instead of returning a value.
 - **PrecursorCorrection** looks spectra up by RT: two MS2 scans with exactly
@@ -227,13 +262,22 @@ keeps the decisions and the rules every session must follow.
   `best ion`, `partners` and `annotation network number`.
 - **writeSupplementaryPairTable** writes no file when there are no adduct
   pairs.
-- **GNPSMGFFile** (source checked) numbers entries `SCANS = position + 1` in the
-  consensus map. For each feature it takes the MS2 spectrum from the run where
-  the feature is most intense, and skips the feature if that spectrum is
-  empty, even when other runs have good spectra. Hence `drop_empty_ms2`.
+- **GNPSMGFFile** (source checked; no longer used):
+  - numbers entries `SCANS = position + 1`;
+  - takes the *first* MS2 spectrum of the most intense run;
+  - bins its peaks at 0.02 Da (intensities averaged);
+  - skips the feature if that spectrum is empty.
+
+  `write_mgf` keeps its fields (OUTPUT, SCANS, FEATURE_ID, MSLEVEL, CHARGE,
+  PEPMASS, FILE_INDEX, RTINSECONDS = raw RT of the spectrum).
+- **OnDiscMSExperiment** reads single spectra from an indexed mzML
+  (`openFile` returns False otherwise); `write_mgf` uses it.
+- **ConvexHull2D.setHullPoints** needs a float32 array.
 - **FeatureFinderMetaboIdent:**
-  - Without a formula or an isotope pattern, it logs "No sum formula given…
-    using estimation method for peptides" once per target.
+  - Without a formula, and with an empty isotope pattern or one starting
+    with 0, it uses its *peptide* model and logs "No sum formula given…
+    using estimation method for peptides" once per target. Pass the
+    measured pattern, or `[1.0]`.
   - Its feature intensity is a fitted-model area **summed over the extracted
     isotope traces**. Each trace subordinate has `native_id` `…_i<k>` and
     `isotope_probability`.
@@ -325,6 +369,33 @@ keeps the decisions and the rules every session must follow.
   also check the precursor (`require_matching_adduct_precursor_mz_parent_mass`).
   Custom filters used with `SpectrumProcessor(create_report=True)` need a
   `clone` argument.
+- **matchms speed (0.33):**
+  - `SpectrumProcessor(create_report=True)` clones the spectrum at *every*
+    filter.
+  - `Metadata.set` re-harmonizes every key (PickyDict regexes).
+  - `Spectrum.get` copies the metadata dict.
+  - Result: about 1 ms per spectrum for the metadata filters alone, plus a
+    few ms for the RDKit ones.
+  - `SpectrumProcessor` also re-orders matchms filters into its own
+    order; `prepare_library` runs its own loop, in its own order, with
+    `clone=False`.
+  - matchms reads only GNPS-format JSON (`as_spectrum` needs
+    `peaks_json`); MoNA and MassBank JSON give 0 spectra without an error.
+- **MoNA JSON export:**
+  - list of records with `compound[0].names/metaData/inchi/inchiKey`,
+    spectrum `metaData` (name/value: "precursor m/z", "precursor type",
+    "ionization mode", "ms level", "retention time"...);
+  - `spectrum` = "mz:int mz:int";
+  - `tags` (e.g. "In-Silico", "LipidBlast").
+
+  FragHub's `json_to_dict.py` reads the same keys.
+- **MassBank.json** (MassBank-web `RecordToJson`):
+  - record-format keys: `CH$NAME` (list), `CH$SMILES`, `CH$IUPAC` (InChI),
+    `CH$LINK.INCHIKEY`, `AC$MASS_SPECTROMETRY_MS_TYPE`,
+    `AC$MASS_SPECTROMETRY_ION_MODE`, `MS$FOCUSED_ION.PRECURSOR_M/Z` and
+    `PRECURSOR_TYPE`, `AC$CHROMATOGRAPHY.RETENTION_TIME` ("5.68 min");
+  - `PK$PEAK` = [[mz, int, rel]] as text;
+  - withdrawn records have `DEPRECATED`.
 - **Panel FileDropper (1.9):** it keeps each upload in memory; `DiskDropper`
   overrides `_process_event` (one `upload_event` per chunk: name, chunk,
   total_chunks, data) to write chunks to disk. Extra parameters of a

@@ -10,13 +10,14 @@ rule export:
             if CFG.gap_filling.enabled
             else "work/consensus/linked.consensusXML"
         ),
-        mzml=expand("work/mzml/{sample}.mzML", sample=NAMES),
-        # Gap-filled feature maps: tell which values were re-extracted.
-        gap_filled=(
+        # The feature maps that were linked: their MS2 spectra, and which
+        # values gap filling re-extracted.
+        features=(
             expand("work/gap_filling/{sample}.featureXML", sample=NAMES)
             if CFG.gap_filling.enabled
-            else []
+            else expand("work/annotated/{sample}.featureXML", sample=NAMES)
         ),
+        mzml=expand("work/mzml/{sample}.mzML", sample=NAMES),
     output:
         features=RESULTS["features"],
         quant=RESULTS["quant"],
@@ -24,7 +25,6 @@ rule export:
         mgf=RESULTS["mgf"],
         gnps_quant=RESULTS["gnps_quant"],
         gnps_pairs=RESULTS["gnps_pairs"],
-        gnps_consensus="work/export/gnps.consensusXML",
     params:
         names=NAMES,
         export=CFG.export.to_dict(),

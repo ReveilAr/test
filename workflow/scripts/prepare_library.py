@@ -13,4 +13,5 @@ run_prepare_library(
     rt_unit=snakemake.params.rt_unit,
     min_peaks=snakemake.params.cleaning["min_library_peaks"],
     repair=snakemake.params.cleaning["repair_annotations"],
+    in_silico=snakemake.params.in_silico,
 )

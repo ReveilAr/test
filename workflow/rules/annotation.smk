@@ -35,6 +35,8 @@ rule prepare_library:
         polarity=CFG.adducts.polarity,
         precursor_window_da=CFG.spectrum_qc.precursor_window_da,
         rt_unit=lambda w: CFG.library_search.library(w.library)["rt_unit"],
+        # Predicted spectra skip the structure checks (see libraries.prepare_library).
+        in_silico=lambda w: CFG.library_search.library(w.library)["kind"] == "in_silico",
         cleaning={key: CFG.library_search.to_dict()[key] for key in LIBRARY_CLEANING},
     log:
         "logs/prepare_library/{library}.log",
@@ -43,7 +45,7 @@ rule prepare_library:
 
 
 rule combine_libraries:
-    """All libraries in one table, duplicates removed; cleaning report."""
+    """All libraries in one table, duplicates removed; cleaning report; the harmonized library as MGF."""
     input:
         libraries=expand("work/annotation/libraries/{library}.parquet", library=LIBRARY_NAMES),
         reports=expand("work/annotation/libraries/{library}.cleaning.tsv", library=LIBRARY_NAMES),
@@ -51,6 +53,8 @@ rule combine_libraries:
         library="work/annotation/libraries.parquet",
         summary="results/annotations/library_summary.tsv",
         cleaning="results/annotations/library_cleaning.tsv",
+        # The harmonized library, to browse or reuse elsewhere.
+        mgf="results/annotations/harmonized_library.mgf",
     params:
         libraries=[CFG.library_search.library(name) for name in LIBRARY_NAMES],
         remove_duplicates=CFG.library_search.remove_duplicates,

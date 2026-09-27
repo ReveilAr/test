@@ -1,4 +1,7 @@
-"""Rule `annotate_run`: adduct grouping and MS2 mapping of one run."""
+"""
+Rule `annotate_run`: adduct grouping and MS2 mapping of one run (MS2
+spectra stored as spectrum indices on the features: annotate.attach_ms2).
+"""
 # `snakemake` is provided by Snakemake's script directive.
 import os
 

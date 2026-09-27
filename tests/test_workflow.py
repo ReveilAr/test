@@ -8,14 +8,14 @@ import shutil
 from pathlib import Path
 
 import pandas as pd
-import pyopenms as oms
 import pytest
 import yaml
 
 import atlas_ms
 from atlas_ms.config import ExportSettings
+from atlas_ms.preprocessing.annotate import ms2_spectra
 from atlas_ms.preprocessing.export import export_gnps
-from atlas_ms.preprocessing.msdata import load_consensus_map
+from atlas_ms.preprocessing.msdata import load_consensus_map, load_feature_map
 from atlas_ms.project import Project
 from conftest import snakemake
 from synthetic import LIPIDS
@@ -196,16 +196,38 @@ def test_gnps_export_without_any_ms2(processed_project, tmp_path):
     """An MS1-only study must still produce every GNPS file (empty ones)."""
     root = processed_project.root
     consensus = load_consensus_map(root / "work/consensus/gap_filled.consensusXML")
-    no_ms2 = oms.ConsensusMap(consensus)
-    no_ms2.clear(False)
-    for cf in consensus:
-        cf.setPeptideIdentifications(oms.PeptideIdentificationList())
-        no_ms2.push_back(cf)
     samples = processed_project.load_samples()
     mzml = [root / "work/mzml" / f"{name}.mzML" for name in samples.index]
-    export_gnps(no_ms2, mzml, tmp_path / "gnps", tmp_path / "gnps.consensusXML", ExportSettings())
+    no_ms2 = [[] for _ in range(consensus.size())]
+    export_gnps(consensus, no_ms2, mzml, tmp_path / "gnps", ExportSettings())
     for name in ("ms2_spectra.mgf", "quantification_table.txt", "iimn_supplementary_pairs.csv"):
         assert (tmp_path / "gnps" / name).exists(), name
+
+
+def test_ms2_spectra_are_attached_without_proteomics_identifications(processed_project, results):
+    """
+    MS2 spectra are attached to features as plain spectrum indices: no
+    OpenMS peptide/protein identifications anywhere, each spectrum on one
+    feature at most, and every attached spectrum is in the MGF export.
+    """
+    root = processed_project.root
+    for path in sorted((root / "work/gap_filling").glob("*.featureXML")):
+        features = load_feature_map(path)
+        spectra = [index for feature in features for index in ms2_spectra(feature)]
+        assert spectra and len(spectra) == len(set(spectra)), path.name
+        assert all(feature.getPeptideIdentifications().size() == 0 for feature in features)
+        assert features.getProteinIdentifications() == []
+    consensus = load_consensus_map(root / "work/consensus/gap_filled.consensusXML")
+    assert all(cf.getPeptideIdentifications().size() == 0 for cf in consensus)
+
+    # The MGF: OpenMS GNPSMGFFile's fields, one spectrum per feature with MS2
+    # (7 of the synthetic compounds are fragmented).
+    blocks = (results["gnps"] / "ms2_spectra.mgf").read_text().split("BEGIN IONS")[1:]
+    assert len(blocks) == 7
+    fields = dict(line.split("=", 1) for line in blocks[0].splitlines() if "=" in line)
+    assert set(fields) == {"OUTPUT", "SCANS", "FEATURE_ID", "MSLEVEL", "CHARGE", "PEPMASS", "FILE_INDEX",
+                           "RTINSECONDS"}
+    assert fields["OUTPUT"] == "most_intense" and fields["CHARGE"] == "1+"
 
 
 def test_rule_logs_record_the_code_version(processed_project):
