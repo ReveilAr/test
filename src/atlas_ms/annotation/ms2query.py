@@ -71,15 +71,18 @@ def parse_results(csv_file, precursor_tolerance_ppm: float) -> pd.DataFrame:
     return candidate_table(rows)
 
 
-def run_ms2query(mgf_file, models_dir, csv_out, out, settings: dict) -> None:
+def run_ms2query(mgf_file, models_dir, csv_out, out, settings: dict, threads: int = 1) -> None:
     """
     File-level entry point of the ``run_ms2query`` rule. MS2Query writes its
     CSV into ``csv_out``'s folder, named after the MGF file (and adds a
     number to the name if that file exists: it is deleted first).
     """
+    import torch
     from ms2query.ms2library import create_library_object_from_one_dir
     from ms2query.run_ms2query import run_ms2query_single_file
     from ms2query.utils import SettingsRunMS2Query
+
+    torch.set_num_threads(threads)  # MS2DeepScore inside MS2Query: the cores Snakemake gave this step
 
     models_dir = Path(models_dir)
     if models_dir.is_file():  # the download marker: the files are next to it

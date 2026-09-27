@@ -8,7 +8,7 @@ log_to_file(snakemake.log[0])
 run_search_libraries(
     mgf_file=snakemake.input.mgf,
     features_file=snakemake.input.features,
-    library_files=list(snakemake.input.libraries),
+    library_file=snakemake.input.library,
     entries=snakemake.params.libraries,
     out=snakemake.output[0],
     precursor_window_da=snakemake.params.precursor_window_da,

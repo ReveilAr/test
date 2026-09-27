@@ -49,9 +49,12 @@ def sample_name(path: str | Path) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "_", Path(path).stem).strip("_") or "sample"
 
 
-def make_sample_table(files: list[str | Path]) -> pd.DataFrame:
-    """Build a new sample table (all rows of type "sample") from raw file paths."""
-    rows, used = [], set()
+def make_sample_table(files: list[str | Path], taken=frozenset()) -> pd.DataFrame:
+    """
+    Build a new sample table (all rows of type "sample") from raw file paths.
+    Sample names are unique, also among ``taken`` (names already in use).
+    """
+    rows, used = [], set(taken)
     for file in files:
         raw_format(file)  # fail early on unsupported files
         name = sample_name(file)
@@ -62,6 +65,17 @@ def make_sample_table(files: list[str | Path]) -> pd.DataFrame:
         used.add(unique)
         rows.append({"sample": unique, "file": str(Path(file).resolve()), "sample_type": "sample"})
     return pd.DataFrame(rows, columns=["sample", "file", "sample_type"])
+
+
+def add_samples(samples: pd.DataFrame, files: list[str | Path]) -> pd.DataFrame:
+    """
+    The sample table with a new row (type "sample", empty metadata) for each
+    file not listed yet. Adding samples to a processed project re-runs the
+    steps that combine all runs (alignment, linking...) on the next run.
+    """
+    listed = {str(Path(f).resolve()) for f in samples["file"]}
+    new = make_sample_table([f for f in files if str(Path(f).resolve()) not in listed], taken=set(samples["sample"]))
+    return pd.concat([samples, new], ignore_index=True).fillna("")
 
 
 def validate_samples(samples: pd.DataFrame) -> pd.DataFrame:

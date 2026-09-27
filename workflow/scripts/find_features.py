@@ -1,8 +1,14 @@
 """Rule `find_features`: untargeted feature detection in one run."""
 # `snakemake` is provided by Snakemake's script directive.
-from atlas_ms.config import FeatureFindingSettings, InstrumentSettings
-from atlas_ms.logs import log_to_file
-from atlas_ms.preprocessing.features import find_features
+import os
+
+# OpenMP threads for pyOpenMS: the cores Snakemake gave this step (set
+# before pyOpenMS is imported, which starts OpenMP).
+os.environ["OMP_NUM_THREADS"] = str(snakemake.threads)
+
+from atlas_ms.config import FeatureFindingSettings, InstrumentSettings  # noqa: E402
+from atlas_ms.logs import log_to_file  # noqa: E402
+from atlas_ms.preprocessing.features import find_features  # noqa: E402
 
 log_to_file(snakemake.log[0])
 find_features(

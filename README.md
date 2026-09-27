@@ -38,7 +38,7 @@ atlas-ms init my_study data/*.raw --instrument orbitrap --adducts positive_lipid
 #    add ATTRIBUTE_* metadata columns) and my_study/project.yaml (parameters)
 
 # 3. Process
-atlas-ms run my_study --cores 4
+atlas-ms run my_study          # all CPU cores by default (--cores N for fewer)
 
 # Or do all of it in the app (opens in the browser)
 atlas-ms app my_study   # port 5006, or the next free one if it is taken
@@ -60,7 +60,19 @@ class). The **Annotation** tab lists every candidate of the selected
 feature, from every source, with its evidence: a mirror plot against the
 library spectrum, or the diagnostic lipid ions marked on the spectrum.
 
+**Files** can be dropped on the app: raw files (new project, or more
+samples), libraries, an MS2DeepScore model, MS2Query's files. A browser
+sends the file's content, not its location, so a dropped file is copied
+(into the project's `raw/` or `libraries/` folder, or the model cache).
+Typing a path uses the file where it is (better for many large raw files).
+
 **Spectral libraries** (MSP, MGF or GNPS JSON) are added in the Setup tab.
+Each is harmonized once, in the spirit of FragHub: metadata names and
+adducts unified, missing structure identifiers derived, annotations that
+contradict their precursor repaired or removed, predicted spectra
+recognised, and spectra present in several libraries kept once. What was
+removed or changed is in `results/annotations/library_cleaning.tsv` and
+`library_summary.tsv` (also shown in the Setup tab).
 Mark a library as *reference standards* only if its spectra were measured
 on your own method, with retention times: only those can give level 1.
 In-silico libraries (e.g. LipidBlast) give at most level 3.
@@ -70,9 +82,12 @@ classes) and **MS2Query** (analog search) are switched on in the Setup
 tab's parameters (the SIRIUS and MS2Query cards). The pipeline installs both in their
 own conda environments on first use.
 
-- SIRIUS needs a free academic account: sign in once in the SIRIUS 6
-  GUI (or `sirius login`). The pipeline uses a SIRIUS that is already
-  running, or starts its own. The SIRIUS project is kept in
+- SIRIUS needs a free academic account: enter it in the SIRIUS card of
+  the Setup tab (it is saved for you only, in `~/.config/atlas-ms/`, never
+  in the project), or sign in once in the SIRIUS 6 GUI. The pipeline uses
+  a SIRIUS that is already running, or starts its own and stops it at the
+  end (also when you press Stop). MSNovelist (de novo structures) is an
+  option of the same card. The SIRIUS project is kept in
   `work/sirius/project.sirius` for the GUI. Expect hours for thousands of
   features.
 - MS2Query downloads its library and models (a few GB) once, to
@@ -94,6 +109,32 @@ Results in `my_study/results/`:
 
 Feature ids are the same everywhere. Features with MS2 are numbered first,
 so `feature_id` = GNPS `row ID` = MGF `SCANS`.
+
+## Parallel work and memory
+
+`--cores` (and the app's CPU cores box) is a maximum: Snakemake runs as
+many steps at once as fit, one core each, so it uses fewer when fewer steps
+are ready. Steps that load a whole run declare their memory needs, and
+Snakemake is given 80% of the available memory, so a laptop processes
+fewer runs at once instead of swapping. The steps that process one run
+share the cores between the runs (4 runs on 16 cores: 4 threads each; 100
+runs: 1 each), and the steps that are parallel inside (MS2DeepScore
+scoring, SIRIUS, MS2Query) take all the cores and run alone.
+
+## Disk use and cleanup
+
+Everything of an analysis is in its project folder. Its `work/` folder
+holds the intermediate files (converted mzML, feature maps...): the app
+reads `work/mzml` and `work/alignment` for the chromatograms, and deleting
+`work/` means the next run starts again from the raw files. Outside the projects,
+ATLAS-MS keeps only shared things made once: the tools' conda environments
+and the MS2DeepScore / MS2Query models in `~/.cache/atlas-ms/`, and the
+SIRIUS account file. `atlas-ms cache` lists them with their size. When a
+new version changes a tool's environment, the old one stays there: to free
+space, delete `~/.cache/atlas-ms/conda` (the environments are made again
+when a step needs them). The app's **Quit**
+button (or Ctrl+C) stops the app and frees its port; SIRIUS is stopped by
+the pipeline if the pipeline started it.
 
 ## Update
 

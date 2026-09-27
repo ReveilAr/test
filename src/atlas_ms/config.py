@@ -343,6 +343,19 @@ class LibrarySearchSettings(Section):
             "sparse, hence lower than the GNPS default (6).",
     )
     top_n = param.Integer(default=3, bounds=(1, None), doc="Hits kept per feature and library.")
+    min_library_peaks = param.Integer(
+        default=2, bounds=(1, None),
+        doc="Library spectra with fewer fragments after cleaning are not used (lipid spectra are sparse).",
+    )
+    repair_annotations = param.Boolean(
+        default=True,
+        doc="Harmonization: derive missing SMILES / InChI / InChIKey / formula, repair annotations "
+            "that contradict the precursor mass and remove those that cannot be repaired "
+            "(spectra with a structure only). Slow for very large libraries (RDKit), but done once.",
+    )
+    remove_duplicates = param.Boolean(
+        default=True, doc="Keep a spectrum found in several libraries once (from the most trusted library).",
+    )
 
     def __init__(self, **params):
         super().__init__(**params)
@@ -414,14 +427,16 @@ class SiriusSettings(Section):
     """
 
     enabled = param.Boolean(
-        default=False,
-        doc="Needs a free academic SIRIUS account for CSI:FingerID and CANOPUS: log in once "
-            "with the SIRIUS GUI or `sirius login`. Takes hours for thousands of features.",
+        default=False, label="Run SIRIUS",
+        doc="Needs a free academic SIRIUS account for CSI:FingerID, CANOPUS and MSNovelist (below). "
+            "Takes hours for thousands of features.",
     )
     profile = param.Selector(default="orbitrap", objects=["orbitrap", "qtof"], doc="SIRIUS instrument profile.")
-    ms2_ppm = param.Number(default=5.0, bounds=(0.1, 50.0), doc="MS2 mass accuracy (ppm) for formula identification.")
+    ms2_ppm = param.Number(default=5.0, bounds=(0.1, 50.0), label="MS2 mass accuracy (ppm)",
+                           doc="MS2 mass accuracy (ppm) for formula identification.")
     formula_candidates = param.Integer(default=10, bounds=(1, None), doc="Formula candidates computed per feature.")
-    zodiac = param.Boolean(default=True, doc="Re-rank formulas with ZODIAC (uses the whole data set).")
+    zodiac = param.Boolean(default=True, label="Re-rank with ZODIAC",
+                           doc="Re-rank formulas with ZODIAC (uses the whole data set).")
     min_formula_score = param.Number(
         default=0.9, bounds=(0.0, 1.0),
         doc="The top formula is level 4 when its ZODIAC score (SIRIUS score without ZODIAC) reaches this.",
@@ -435,7 +450,16 @@ class SiriusSettings(Section):
         doc="Search PubChem when the best database structure has a low COSMIC confidence "
             "(OFF, or by the exact / approximate confidence).",
     )
-    canopus = param.Boolean(default=True, doc="Predict compound classes (ClassyFire, NPClassifier).")
+    canopus = param.Boolean(default=True, label="Run CANOPUS", doc="Predict compound classes (ClassyFire, NPClassifier).")
+    msnovelist = param.Boolean(
+        default=False, label="Run MSNovelist",
+        doc="MSNovelist: generate structures de novo from the predicted fingerprint, for compounds "
+            "missing from every database. Slow (a web service); candidates are level 3 at most.",
+    )
+    msnovelist_candidates = param.Integer(
+        default=128, bounds=(1, None), label="MSNovelist candidates",
+        doc="MSNovelist: structures generated per feature before ranking.",
+    )
     candidates_kept = param.Integer(default=3, bounds=(1, None), doc="Candidates kept per feature and SIRIUS tool.")
 
 
@@ -466,7 +490,8 @@ class HarmonizationSettings(Section):
     """
 
     source_priority = param.List(
-        default=["library", "lipid_rules", "sirius:elgordo", "ms2query", "sirius:csi", "sirius:canopus", "sirius"],
+        default=["library", "lipid_rules", "sirius:elgordo", "ms2query", "sirius:csi", "sirius:msnovelist",
+                 "sirius:canopus", "sirius"],
         item_type=str,
         doc="Between candidates of the same level, the best comes from the first source in this list "
             "(a name like 'library' covers every library; 'sirius:csi' one SIRIUS tool).",

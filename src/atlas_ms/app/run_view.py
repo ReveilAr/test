@@ -15,7 +15,7 @@ from typing import Callable
 import panel as pn
 
 from atlas_ms.project import Project
-from atlas_ms.runner import snakemake_command
+from atlas_ms.runner import available_cores, snakemake_command, snakemake_env
 
 PROGRESS = re.compile(r"(\d+) of (\d+) steps \((\d+)%\) done")
 LOG_LINES = 40  # lines of Snakemake output shown under the buttons
@@ -41,7 +41,11 @@ class RunPanel:
         self.process = None
         self.lines = deque(maxlen=LOG_LINES)
 
-        self.cores = pn.widgets.IntInput(label="CPU cores", value=4, start=1, width=120)
+        # A maximum: Snakemake uses fewer when fewer steps can run at once,
+        # and runs fewer runs at once when memory is short (see runner.py).
+        cores = available_cores()
+        self.cores = pn.widgets.IntInput(label=f"CPU cores (max. used at once; {cores} here)", value=cores,
+                                         start=1, end=cores, width=220)
         self.run_button = pn.widgets.Button(label="Run", color="primary", width=100)
         self.stop_button = pn.widgets.Button(label="Stop", color="danger", width=100, disabled=True)
         self.progress = pn.indicators.Progress(value=0, max=100, sizing_mode="stretch_width")
@@ -73,7 +77,7 @@ class RunPanel:
         try:
             self.process = await asyncio.create_subprocess_exec(
                 *self.command(self.project.root, cores=self.cores.value),
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=snakemake_env(),
             )
             while line := await self.process.stdout.readline():
                 self._show(line.decode(errors="replace").rstrip())

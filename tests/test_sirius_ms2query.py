@@ -23,7 +23,7 @@ from test_workflow import feature_of, planned_jobs
 
 SETTINGS = {"profile": "orbitrap", "ms2_ppm": 5.0, "formula_candidates": 10, "zodiac": True,
             "min_formula_score": 0.9, "structure_databases": ["BIO"], "expansive_search": "APPROXIMATE",
-            "canopus": True, "candidates_kept": 3}
+            "canopus": True, "candidates_kept": 3, "msnovelist": True, "msnovelist_candidates": 64}
 
 
 # ---- SIRIUS input ------------------------------------------------------------
@@ -51,19 +51,25 @@ def fake_models():
     def model(name):
         return lambda **kwargs: SimpleNamespace(model=name, **kwargs)
     names = ["BasicSpectrum", "SimplePeak", "FeatureImport", "JobSubmission", "Sirius", "Zodiac",
-             "FingerprintPrediction", "Canopus", "StructureDbSearch", "MsNovelist", "SpectralLibrarySearch"]
+             "FingerprintPrediction", "Canopus", "StructureDbSearch", "MsNovelist", "SpectralLibrarySearch",
+             "AccountCredentials"]
     return SimpleNamespace(**{name: model(name) for name in names})
 
 
 class FakeSirius:
     """The part of the PySirius API used by atlas_ms.annotation.sirius, with canned results."""
 
-    def __init__(self, logged_in=True, final_state="DONE"):
-        self.logged_in, self.final_state = logged_in, final_state
-        self.imported, self.submission, self.polls, self.closed = [], None, 0, []
+    def __init__(self, logged_in=True, final_state="DONE", password="secret"):
+        self.logged_in, self.final_state, self.password = logged_in, final_state, password
+        self.imported, self.submission, self.polls, self.closed, self.logins = [], None, 0, [], []
 
     def account(self):
-        return SimpleNamespace(is_logged_in=lambda: self.logged_in)
+        def login(accept_terms, account_credentials):
+            self.logins.append((accept_terms, account_credentials.username))
+            if account_credentials.password != self.password:
+                raise ValueError("(401) Unauthorized")
+            self.logged_in = True
+        return SimpleNamespace(is_logged_in=lambda: self.logged_in, login=login)
 
     def projects(self):
         return SimpleNamespace(get_projects=lambda: [], close_project=self.closed.append,
@@ -106,7 +112,12 @@ class FakeSirius:
                                                         cls("Phosphatidylcholines", 0.97)],
                                    npc_pathway=cls("Fatty acids", 0.9), npc_superclass=None, npc_class=cls("Glycerophosphocholines", 0.9))
 
+        def get_de_novo_structure_candidates(pid, afid, opt_fields):
+            return [SimpleNamespace(structure_name=None, inchi_key="NEWSTRUCTUREXX", smiles="CCCN", molecular_formula="C42H82NO8P",
+                                    adduct="[M+H]+", csi_score=-20.0, tanimoto_similarity=0.7, db_links=[])]
+
         return SimpleNamespace(
+            get_de_novo_structure_candidates=get_de_novo_structure_candidates,
             add_aligned_features=lambda pid, imports, profile: self.imported.extend(imports),
             get_aligned_features=lambda pid, opt_fields: [
                 SimpleNamespace(external_feature_id=i.external_feature_id, aligned_feature_id=f"af-{i.external_feature_id}",
@@ -135,6 +146,7 @@ def test_sirius_candidates_from_a_fake_sirius(tmp_path):
     assert api.imported[0].detected_adducts == ["[M+H]+"] and api.imported[1].detected_adducts is None
     job = api.submission
     assert job.fallback_adducts == ["[M+H]+", "[M+Na]+"] and job.formula_id_params.profile == "ORBITRAP"
+    assert job.ms_novelist_params.enabled and job.ms_novelist_params.number_of_candidate_to_predict == 64
     assert job.structure_db_search_params.structure_search_dbs == ["BIO"]
     assert api.polls == 2 and len(api.closed) == 1  # waited for the job; project closed
 
@@ -150,17 +162,55 @@ def test_sirius_candidates_from_a_fake_sirius(tmp_path):
     assert (csi["name"], csi["proposed_level"]) == ("POPC", "3")
     assert json.loads(csi["evidence"])["cosmic_confidence_exact"] == 0.8
     assert json.loads(csi["evidence"])["databases"] == ["HMDB", "LIPIDMAPS"]
+    # MSNovelist: de novo structures (named by their InChIKey), level 3, without COSMIC confidence.
+    de_novo = rows.loc[(1, "sirius:msnovelist", 1)]
+    assert (de_novo["name"], de_novo["proposed_level"]) == ("NEWSTRUCTUREXX", "3")
+    assert "cosmic_confidence_exact" not in json.loads(de_novo["evidence"])
     # CANOPUS: the most specific ClassyFire class.
     canopus = rows.loc[(1, "sirius:canopus", 1)]
     assert canopus["name"] == "Phosphatidylcholines"
     assert json.loads(canopus["evidence"])["classyfire"] == "Organic compounds > Lipids > Phosphatidylcholines"
 
 
-def test_sirius_needs_a_login_and_reports_failed_jobs(tmp_path):
+def test_sirius_login_and_failed_jobs(tmp_path):
+    def run(api, account):
+        return annotate_with_sirius(api, fake_models(), ENTRIES, SETTINGS, [], tmp_path / "p.sirius", poll_s=0,
+                                    account=account)
+
+    # Not logged in, no saved account: a clear message.
     with pytest.raises(RuntimeError, match="not logged in"):
-        annotate_with_sirius(FakeSirius(logged_in=False), fake_models(), ENTRIES, SETTINGS, [], tmp_path / "p.sirius")
+        run(FakeSirius(logged_in=False), None)
+    # The saved account needs the terms of service accepted.
+    with pytest.raises(RuntimeError, match="terms of service"):
+        run(FakeSirius(logged_in=False), {"username": "me@lab.org", "password": "secret", "accept_terms": False})
+    # Wrong password: SIRIUS's message is passed on.
+    with pytest.raises(RuntimeError, match="login failed for me@lab.org.*Unauthorized"):
+        run(FakeSirius(logged_in=False), {"username": "me@lab.org", "password": "oops", "accept_terms": True})
+    # Right password: logged in once, then the run goes on.
+    api = FakeSirius(logged_in=False)
+    assert not run(api, {"username": "me@lab.org", "password": "secret", "accept_terms": True}).empty
+    assert api.logins == [(True, "me@lab.org")]
+    # Already logged in (e.g. in the SIRIUS GUI): the saved account is not used.
+    api = FakeSirius(logged_in=True)
+    run(api, {"username": "me@lab.org", "password": "secret", "accept_terms": True})
+    assert api.logins == []
     with pytest.raises(RuntimeError, match="FAILED: boom"):
         wait_for(FakeSirius(final_state="FAILED"), "pid", SimpleNamespace(id="job-1"), poll_s=0)
+
+
+def test_sirius_account_file_is_private(tmp_path):
+    import stat
+
+    from atlas_ms.credentials import forget_sirius_account, load_sirius_account, save_sirius_account
+
+    path = tmp_path / "config" / "sirius_account.json"
+    save_sirius_account("me@lab.org", "secret", True, path)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600  # readable by its owner only
+    assert load_sirius_account(path) == {"username": "me@lab.org", "password": "secret", "accept_terms": True}
+    save_sirius_account("me@lab.org", "new", True, path)  # overwriting keeps it private
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600 and load_sirius_account(path)["password"] == "new"
+    forget_sirius_account(path)
+    assert load_sirius_account(path) is None
 
 
 def test_best_annotation_prefers_structures_to_classes(tmp_path):

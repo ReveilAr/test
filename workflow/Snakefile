@@ -30,6 +30,22 @@ def names_regex(names):
     return "|".join(re.escape(name) for name in names) or "(?!x)x"
 
 
+# Threads of a step that processes one run: the runs share the cores (4 runs
+# on 16 cores: 4 threads each; 100 runs: 1 each). pyOpenMS uses them through
+# OpenMP (see the rule scripts).
+RUN_THREADS = max(1, workflow.cores // max(1, len(NAMES)))
+
+
+def run_memory_mb(wildcards, input):
+    """
+    Memory estimate (MB) of a step that loads a whole run with pyOpenMS:
+    about 4 times the mzML file, plus 500 MB. With `--resources mem_mb=...`
+    (set by atlas-ms run and the app), Snakemake then starts only as many
+    runs at once as fit in memory.
+    """
+    return int(500 + 4 * input.size_mb)
+
+
 # Sample names grouped by raw file format: decides the conversion rule.
 THERMO = names_regex([n for n in NAMES if raw_format(SAMPLES.loc[n, "file"]) == "thermo"])
 MZML = names_regex([n for n in NAMES if raw_format(SAMPLES.loc[n, "file"]) == "mzml"])

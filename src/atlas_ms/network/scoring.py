@@ -107,8 +107,14 @@ def score_spectra(spectra: list[Spectrum], settings: ScoringSettings) -> pd.Data
     return edges
 
 
-def run_scoring(spectra_file: str | Path, candidates_out: str | Path, settings: ScoringSettings) -> None:
+def run_scoring(spectra_file: str | Path, candidates_out: str | Path, settings: ScoringSettings,
+                threads: int = 1) -> None:
     """File-level entry point: candidate edges of the QC-passed spectra."""
     from atlas_ms.network.spectra import load_spectra
+
+    if settings.score == "ms2deepscore":
+        import torch
+
+        torch.set_num_threads(threads)  # the cores Snakemake gave this step
 
     score_spectra(load_spectra(spectra_file), settings).to_parquet(candidates_out, index=False)

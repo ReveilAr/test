@@ -184,3 +184,50 @@ def test_flags_class_disagreement_and_rt_trend():
     # Family 1: six PC annotations, all agreeing.
     family = best.set_index("feature_id").loc[1]
     assert (family["family_class"], family["family_class_score"]) == ("PC", 1.0)
+
+
+# ---- Library harmonization ------------------------------------------------------
+
+POPC = "CCCCCCCCCCCCCCCC(=O)OCC(COP(=O)([O-])OCC[N+](C)(C)C)OC(=O)CCCCCCCC=CCCCCCCCC"
+CAFFEINE = "Cn1cnc2c1c(=O)n(C)c(=O)n2C"
+
+
+def test_library_harmonization(tmp_path):
+    """FragHub-like clean-up of two messy libraries, and duplicates between them."""
+    from atlas_ms.annotation.libraries import combine_libraries, prepare_library
+    from synthetic import LibraryEntry, write_msp
+
+    pc_peaks = [(104.107, 5.0), (184.0733, 100.0), (577.519, 3.0)]
+    messy = write_msp(tmp_path / "messy.msp", [
+        # Adduct written without brackets, no ion mode, a lipid abbreviation as name, a correct structure.
+        LibraryEntry("POPC", 760.5851, "M+H", "", pc_peaks, ionmode="", smiles=POPC),
+        # A structure that cannot be this precursor (caffeine at m/z 760.59): removed.
+        LibraryEntry("Wrong", 760.5851, "[M+H]+", "", pc_peaks, smiles=CAFFEINE),
+        # A single fragment: removed (min_library_peaks = 2).
+        LibraryEntry("One peak", 496.3398, "[M+H]+", "", [(184.0733, 100.0)]),
+        # Predicted, although the library is declared experimental.
+        LibraryEntry("LPC 16:0", 496.3398, "[M+H]+", "", [(104.107, 30.0), (184.0733, 100.0)],
+                     comment="in-silico MSMS by LipidBlast"),
+        # Negative mode: removed.
+        LibraryEntry("PC 34:1", 804.5760, "[M+HCOO]-", "", [(255.233, 100.0), (281.2486, 80.0)], ionmode="Negative"),
+    ])
+    standards = write_msp(tmp_path / "standards.msp", [LibraryEntry("PC 16:0_18:1", 760.5851, "[M+H]+", "", pc_peaks, rt_min=3.0)])
+
+    table, report = prepare_library(messy, "positive", 17.0)
+    assert list(table["name"]) == ["LPC 16:0", "POPC"]  # sorted by precursor m/z
+    popc = table.set_index("name").loc["POPC"]
+    assert popc["adduct"] == "[M+H]+" and popc["formula"] == "C42H82NO8P"  # formula derived from the SMILES
+    assert popc["inchikey"].startswith("WTJKGGKOPKCXLL")
+    assert table.set_index("name")["in_silico"].to_dict() == {"LPC 16:0": True, "POPC": False}
+    removed = report.set_index("step")["removed spectra"]
+    assert removed["keep_ion_mode"] == 1 and removed["repair_structure_annotation"] == 1
+    assert removed["require_minimum_number_of_peaks"] == 1 and (report["spectra read"] == 5).all()
+
+    # The standard's copy of PC is kept, the messy library's duplicate removed.
+    std_table, _ = prepare_library(standards, "positive", 17.0)
+    entries = [{"name": "messy", "kind": "experimental", "reference_standards": False},
+               {"name": "standards", "kind": "experimental", "reference_standards": True}]
+    combined, summary = combine_libraries([table, std_table], entries)
+    assert sorted(zip(combined["library"], combined["name"], combined["kind"])) == [
+        ("messy", "LPC 16:0", "in_silico"), ("standards", "PC 16:0_18:1", "experimental")]
+    assert summary.set_index("library")["duplicates removed"].to_dict() == {"messy": 1, "standards": 0}

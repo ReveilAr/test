@@ -180,7 +180,7 @@ step needs the spectra (`atlas_ms.preprocessing.msdata.load_run`).
 | 6 | Spectrum QC (`spectrum_qc`) | core | `work/network/spectra.pickle`, `spectrum_qc.parquet` | The MGF spectrum of each feature is cleaned (matchms default filters, fragments within ±17 Da of the precursor removed, intensities normalised). Spectra with fewer than `min_peaks` fragments (low default: lipid MS2 is sparse) get no spectral edges. **Never filter on the similarity score.** |
 | 7 | Scoring (`score_spectra`) | core | `work/network/candidates.parquet` | matchms `ModifiedCosineGreedy` (fragment tolerance from the preset, with matched-fragment counts) or MS2DeepScore (pretrained model downloaded once to `~/.cache/atlas-ms/models` by `download_ms2deepscore_model`; CPU or CUDA). Keeps a pool of candidates: the best `candidates_per_spectrum` neighbours of each spectrum above `min_candidate_score`, so network cutoffs never re-run the scoring. |
 | 8 | Network (`build_network`) | core | `results/network/nodes.parquet`, `edges.parquet`, `network.graphml` | Blank features (mean blank / mean sample > `max_blank_ratio`, only when `samples.tsv` lists blanks) lose their candidate edges. Then the GNPS steps: score cutoff + minimum matched fragments (cosine only) → mutual top-K → weakest edges removed while a family exceeds `max_family_size`. IIMN adduct edges are added. Families = connected components (1 = largest, -1 = singleton), Louvain communities inside them. The layout is precomputed: Kamada-Kawai per family (spring layout above 150 nodes), scaled so the median edge is 1.5 units long, then nodes are pushed apart until each has room for its largest drawn size (radius doubling per 10-fold intensity, from the mean or any single sample). Families are rotated to lie flat and packed in rows, tallest first, with the singletons in rows underneath. |
-| 9 | Annotation (`prepare_library`, `search_libraries`, `annotate_lipids`; later SIRIUS, MS2Query) | core (+ own envs later) | `annotations/<source>.parquet`, `work/annotation/libraries/*.parquet` | See §7 and §9. Each library is read and cleaned once per project (same cleaning as the feature spectra), then searched. |
+| 9 | Annotation (`prepare_library`, `combine_libraries`, `search_libraries`, `annotate_lipids`, `prepare_sirius_input`, `run_sirius`, `run_ms2query`) | core, sirius, ms2query | `annotations/<source>.parquet`, `annotations/library_summary.tsv`, `library_cleaning.tsv` | See §7, §9, §10. Each library is harmonized once per project (FragHub-like: matchms metadata harmonization and repair, offline; in-silico spectra recognised; same peak cleaning as the feature spectra), then all are combined with duplicates removed, and searched. |
 | 10 | MS2LDA 2.0 | ms2lda | `ms2lda/*.parquet` | De novo motifs (number of motifs is a parameter) + MotifDB annotation. |
 | 11 | Harmonization (`harmonize`) | core | `annotations/candidates.parquet`, `best.parquet` | Confidence levels, conflict flags, lipid name normalization (Goslin), RT trend per lipid class, family-level class consensus (MolNetEnhancer logic). See §8. |
 | 12 | Stats cleanup | core | `stats/cleaned_quant.parquet` | FBMN-STATS steps that don't depend on the chosen comparison: blank removal, imputation, normalization. |
@@ -370,8 +370,15 @@ off by default):
   the features with `add_aligned_features` (our feature id as
   `externalFeatureId`: no `.ms` file and no id matching needed), runs one
   job and reads formula candidates (with `lipidAnnotation`), structure
-  candidates (with `dbLinks`), the COSMIC confidences (`topAnnotations`)
-  and the CANOPUS classes (`get_best_matching_compound_classes`). A SIRIUS
+  candidates (with `dbLinks`), MSNovelist's de novo structures
+  (`get_de_novo_structure_candidates`, optional), the COSMIC confidences
+  (`topAnnotations`) and the CANOPUS classes
+  (`get_best_matching_compound_classes`).
+- Login: when SIRIUS is not logged in, the account saved in the app
+  (`~/.config/atlas-ms/sirius_account.json`, owner-only, never in the
+  project or the rule parameters) is used, once the terms are accepted.
+- A SIGTERM (Stop) leaves through the normal exit path, so a SIRIUS the
+  rule started is always shut down. A SIRIUS
   started by the rule is shut down afterwards; your own is left running.
 - Candidates: `sirius:formula` (top: 4 or 5), `sirius:elgordo`,
   `sirius:csi`, `sirius:canopus` (3). Source priority at equal level:
@@ -485,12 +492,25 @@ Run / Stop, progress bar and log pane.
   (clicking one selects it). The Network tab gained colour by confidence
   level and by lipid class (with a legend), and the best annotation in the
   feature table and tooltips.
+- **Files and quitting (built):** raw files, libraries and models can be
+  dropped on the app (browser uploads: copies written piece by piece into
+  the project's `raw/` / `libraries/` folders or the model cache); typed
+  paths use files in place. The SIRIUS card holds the account (saved
+  outside the projects). Quit stops a running pipeline and the server,
+  freeing the port.
 - **Saving:** Setup edits are written only on Save or Run (Run saves first),
   and are validated by the same code as the pipeline.
 - **Running Snakemake:** an async subprocess (the same command as
   `atlas-ms run`) whose output is streamed to the log. Progress is parsed
   from Snakemake's "N of M steps" lines. (Planned: long rules such as SIRIUS
   and MS2Query will also write `logs/progress/*.json`.)
+- **Parallel work (built, `runner.py`):** `--cores` is a maximum (all
+  available cores by default). Steps that load a whole run declare
+  `mem_mb` (about 4 x the mzML), and Snakemake gets 80% of the available
+  memory, so a laptop processes fewer runs at once instead of swapping.
+  OpenMP / BLAS use one thread per job, except that per-run steps share the
+  cores between the runs (cores / runs OpenMP threads each), and
+  MS2DeepScore, SIRIUS and MS2Query take all cores for themselves.
 - **Performance:** Bokeh WebGL output handles the few thousand nodes that
   100 files produce. Edge bundling is optional because it's slow.
 - **Cytoscape (milestone 4):** a "Send to Cytoscape" button uses `py4cytoscape` to push

@@ -17,22 +17,47 @@ if CFG.ms2query.enabled:
     ANNOTATIONS.append("results/annotations/ms2query.parquet")
 
 
+# Library settings each step uses (see CLAUDE.md, rule parameters).
+LIBRARY_CLEANING = ("min_library_peaks", "repair_annotations")
+LIBRARY_SEARCH = ("precursor_tolerance_ppm", "fragment_tolerance_da", "min_score", "min_matched_peaks", "top_n")
+
+
 rule prepare_library:
-    """Read, clean and sort one spectral library (once per project and library file)."""
+    """Read and harmonize one spectral library (once per project and library file)."""
     input:
         lambda w: CFG.library_search.library(w.library)["path"],
     output:
-        "work/annotation/libraries/{library}.parquet",
+        library="work/annotation/libraries/{library}.parquet",
+        report="work/annotation/libraries/{library}.cleaning.tsv",
     wildcard_constraints:
         library=names_regex(LIBRARY_NAMES),
     params:
         polarity=CFG.adducts.polarity,
         precursor_window_da=CFG.spectrum_qc.precursor_window_da,
         rt_unit=lambda w: CFG.library_search.library(w.library)["rt_unit"],
+        cleaning={key: CFG.library_search.to_dict()[key] for key in LIBRARY_CLEANING},
     log:
         "logs/prepare_library/{library}.log",
     script:
         "../scripts/prepare_library.py"
+
+
+rule combine_libraries:
+    """All libraries in one table, duplicates removed; cleaning report."""
+    input:
+        libraries=expand("work/annotation/libraries/{library}.parquet", library=LIBRARY_NAMES),
+        reports=expand("work/annotation/libraries/{library}.cleaning.tsv", library=LIBRARY_NAMES),
+    output:
+        library="work/annotation/libraries.parquet",
+        summary="results/annotations/library_summary.tsv",
+        cleaning="results/annotations/library_cleaning.tsv",
+    params:
+        libraries=[CFG.library_search.library(name) for name in LIBRARY_NAMES],
+        remove_duplicates=CFG.library_search.remove_duplicates,
+    log:
+        "logs/combine_libraries.log",
+    script:
+        "../scripts/combine_libraries.py"
 
 
 rule search_libraries:
@@ -40,12 +65,12 @@ rule search_libraries:
     input:
         mgf=RESULTS["mgf"],
         features=RESULTS["features"],
-        libraries=expand("work/annotation/libraries/{library}.parquet", library=LIBRARY_NAMES),
+        library="work/annotation/libraries.parquet",
     output:
         RESULTS["library_annotations"],
     params:
         libraries=[CFG.library_search.library(name) for name in LIBRARY_NAMES],
-        search={key: value for key, value in CFG.library_search.to_dict().items() if key != "libraries"},
+        search={key: CFG.library_search.to_dict()[key] for key in LIBRARY_SEARCH},
         precursor_window_da=CFG.spectrum_qc.precursor_window_da,
     log:
         "logs/search_libraries.log",
@@ -132,6 +157,8 @@ rule run_sirius:
         candidates="results/annotations/sirius.parquet",
         # Kept to be opened in the SIRIUS GUI.
         project="work/sirius/project.sirius",
+    # SIRIUS computes in parallel itself: nothing else runs meanwhile.
+    threads: workflow.cores
     params:
         sirius=CFG.sirius.to_dict(),
         adducts=[adduct["name"] for adduct in CFG.adducts.adducts],
@@ -163,6 +190,7 @@ rule run_ms2query:
     output:
         candidates="results/annotations/ms2query.parquet",
         csv="work/ms2query/ms2_spectra.csv",
+    threads: workflow.cores
     params:
         ms2query={key: value for key, value in CFG.ms2query.to_dict().items() if key not in ("enabled", "models_dir")},
     log:

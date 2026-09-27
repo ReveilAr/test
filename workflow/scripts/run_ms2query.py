@@ -15,4 +15,5 @@ run_ms2query(
     csv_out=snakemake.output.csv,
     out=snakemake.output.candidates,
     settings=snakemake.params.ms2query,
+    threads=snakemake.threads,
 )

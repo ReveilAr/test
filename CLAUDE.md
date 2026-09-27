@@ -67,6 +67,15 @@ keeps the decisions and the rules every session must follow.
     GB from Zenodo, blocked here).
   - Still to do: public libraries, CANOPUS-vs-structure and formula
     disagreement flags; then network tuning (milestone 5) and milestone 4.
+- **User requests after milestone 3 (done):** drag and drop of raw files,
+  libraries and models (copies, streamed to disk); FragHub-like library
+  harmonization (`libraries.prepare_library` + `combine_libraries`: matchms
+  metadata harmonization and repair, in-silico detection, duplicates
+  removed across libraries, reports); SIRIUS account in the app
+  (`atlas_ms.credentials`, file outside the projects, 0600); MSNovelist;
+  Quit button (frees the port); parallel work: `--cores` = all available
+  by default, memory-aware scheduling, one OpenMP thread per job;
+  `atlas-ms cache`.
 - **Name:** ATLAS-MS is a placeholder (Python package `atlas_ms`, command
   `atlas-ms`). The repo is private and licensing is decided later.
 
@@ -79,7 +88,7 @@ keeps the decisions and the rules every session must follow.
 - **Environment:** `conda env create -f environment.yml` installs the
   package in editable mode. Python dependencies are listed once, in
   `pyproject.toml`.
-- **Tests:** `pytest` (about 1.5 min: matchms and PyTorch imports are slow). `tests/synthetic.py` generates the
+- **Tests:** `pytest` (about 3 min: matchms and PyTorch imports are slow). `tests/synthetic.py` generates the
   LC-MS runs. Every change to a processing step needs a test with an
   expected value on the synthetic study.
 - **Running:** `atlas-ms init <project> <files>` then `atlas-ms run <project>`.
@@ -96,7 +105,14 @@ keeps the decisions and the rules every session must follow.
   a `test-main/` folder, which looks like a GitHub ZIP download (no git, so
   `commit unknown`, and `git pull` impossible). The README recommends a clone.
 - **App port:** `atlas-ms app` uses port 5006, or the next free port if it
-  is taken (`app.main.free_port`), usually by an app left running.
+  is taken (`app.main.free_port`), usually by an app left running. The
+  sidebar's Quit button stops the server (`app.main.stop_later`).
+- **Outside the projects** ATLAS-MS writes only shared, made-once things:
+  `~/.cache/atlas-ms/` (conda envs, MS2DeepScore and MS2Query models) and
+  `~/.config/atlas-ms/sirius_account.json`. `atlas-ms cache` lists them.
+  Never write per-analysis files there. Snakemake's `--conda-cleanup-envs`
+  deletes the environments the workflow *uses* (not old ones): to clear
+  old environments, delete `~/.cache/atlas-ms/conda`.
 
 ## Decisions (from the design Q&A)
 - **Platform:** Linux only for now (Windows maybe later, don't design for it
@@ -298,6 +314,27 @@ keeps the decisions and the rules every session must follow.
   script's real path, so `Path(__file__).parents[2] / "src"` finds the
   package; the Snakemake object itself unpickles thanks to Snakemake's own
   search path.
+- **matchms library cleaning (0.33):** the `LIBRARY_CLEANING` pipeline
+  cannot be used as is for our libraries: `require_parent_mass_match_smiles`
+  and the other `require_*` annotation filters drop every spectrum without
+  a structure, `require_correct_ionmode` drops spectra without an ion mode,
+  `derive_annotation_from_compound_name` queries PubChem online, and
+  `derive_formula_from_name` takes names such as "POPC" for formulas.
+  `repair_parent_mass_from_smiles` overwrites the parent mass with the
+  structure's mass, so a wrong structure then passes the SMILES check:
+  also check the precursor (`require_matching_adduct_precursor_mz_parent_mass`).
+  Custom filters used with `SpectrumProcessor(create_report=True)` need a
+  `clone` argument.
+- **Panel FileDropper (1.9):** it keeps each upload in memory; `DiskDropper`
+  overrides `_process_event` (one `upload_event` per chunk: name, chunk,
+  total_chunks, data) to write chunks to disk. Extra parameters of a
+  widget subclass must be listed in `_rename` with `None`, or Bokeh rejects
+  them when the widget renders.
+- **Snakemake resources:** `--cores` is a maximum. Jobs declaring more
+  `mem_mb` than `--resources mem_mb` get scaled down and run alone (not an
+  error). Snakemake sets `OMP_NUM_THREADS` only for `shell:` rules, so the
+  runner sets it (to 1) for the whole run, and the per-run scripts set it
+  to `snakemake.threads` (cores / runs) before importing pyOpenMS.
 - **ThermoRawFileParser 1.4.5 (bioconda, runs on Mono):** `--input=`,
   `--output=` (a file) and `--format=2` (indexed mzML). Vendor peak picking
   is on by default.

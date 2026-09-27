@@ -28,6 +28,9 @@ rule fill_gaps:
         members="work/gap_filling/members.tsv",
     output:
         "work/gap_filling/{sample}.featureXML",
+    resources:
+        mem_mb=run_memory_mb,
+    threads: RUN_THREADS
     params:
         map_index=lambda wc: NAMES.index(wc.sample),
         instrument=CFG.instrument.to_dict(),

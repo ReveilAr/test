@@ -9,4 +9,5 @@ run_scoring(
     spectra_file=snakemake.input.spectra,
     candidates_out=snakemake.output[0],
     settings=ScoringSettings(**snakemake.params.scoring),
+    threads=snakemake.threads,
 )

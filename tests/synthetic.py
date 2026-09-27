@@ -201,6 +201,8 @@ class LibraryEntry:
     peaks: list[tuple[float, float]]  # (m/z, intensity)
     rt_min: float | None = None  # retention time (minutes), for reference standards
     ionmode: str = "Positive"
+    smiles: str = ""
+    comment: str = ""
 
 
 # A library of "reference standards" measured on the same method (with
@@ -231,8 +233,9 @@ def write_msp(path: str | Path, entries: list[LibraryEntry]) -> Path:
     """Write library entries as an MSP file (the NIST text format)."""
     lines = []
     for entry in entries:
-        lines += [f"NAME: {entry.name}", f"PRECURSORMZ: {entry.precursor_mz}", f"PRECURSORTYPE: {entry.adduct}",
-                  f"FORMULA: {entry.formula}", f"IONMODE: {entry.ionmode}"]
+        lines += [f"NAME: {entry.name}", f"PRECURSORMZ: {entry.precursor_mz}", f"PRECURSORTYPE: {entry.adduct}"]
+        lines += [f"{key}: {value}" for key, value in (("FORMULA", entry.formula), ("IONMODE", entry.ionmode),
+                                                         ("SMILES", entry.smiles), ("COMMENT", entry.comment)) if value]
         if entry.rt_min is not None:
             lines.append(f"RETENTIONTIME: {entry.rt_min}")
         lines.append(f"Num Peaks: {len(entry.peaks)}")

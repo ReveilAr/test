@@ -15,6 +15,8 @@ One SIRIUS job covers, for every feature of ``work/sirius/input.json``
 * CSI:FingerID: predicts the molecular fingerprint and ranks the structures
   of the chosen databases, with the COSMIC confidence of the top hit, and
   (expansive search) falls back to PubChem when the confidence is low;
+* MSNovelist (optional): generates structures de novo from the predicted
+  fingerprint, for compounds missing from every database;
 * CANOPUS: compound classes (ClassyFire, NPClassifier).
 
 Candidates written, and the levels they propose:
@@ -25,19 +27,26 @@ Candidates written, and the levels they propose:
 * ``sirius:elgordo``: lipid species, level 3;
 * ``sirius:csi``: structure candidates, level 3 whatever the COSMIC
   confidence (a design decision: CSI:FingerID is never more than tentative);
+* ``sirius:msnovelist``: de novo structures, level 3;
 * ``sirius:canopus``: the most specific compound class, level 3.
 
 The SIRIUS project (``work/sirius/project.sirius``) is kept: it can be opened
 in the SIRIUS GUI to look at fragmentation trees and every candidate.
+
+Login: CSI:FingerID, CANOPUS and MSNovelist are web services of Bright Giant
+and need a (free, academic) account. When SIRIUS is not logged in, the
+account saved in the app (``atlas_ms.credentials``) is used.
 """
 
 import hashlib
 import json
 import logging
+import signal
 import time
 from pathlib import Path
 
 from atlas_ms.annotation.schema import candidate_table, to_json
+from atlas_ms.credentials import load_sirius_account
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +93,8 @@ def job_submission(models, settings: dict, fallback_adducts: list[str]):
             tag_structures_with_lipid_class=True,
             expansive_search_confidence_mode=settings["expansive_search"],
         ),
-        ms_novelist_params=models.MsNovelist(enabled=False),  # de novo structures: slow, off
+        ms_novelist_params=models.MsNovelist(
+            enabled=settings["msnovelist"], number_of_candidate_to_predict=settings["msnovelist_candidates"]),
         spectra_search_params=models.SpectralLibrarySearch(enabled=False),  # our own library search does it
     )
 
@@ -137,17 +147,21 @@ def formula_rows(feature_id: int, formulas: list, settings: dict) -> list[dict]:
     return rows
 
 
-def structure_rows(feature_id: int, structures: list, annotations, settings: dict) -> list[dict]:
-    """CSI:FingerID structure candidates (sirius:csi), with the COSMIC confidence of the top hit."""
+def structure_rows(feature_id: int, structures: list, annotations, settings: dict,
+                   source: str = "sirius:csi") -> list[dict]:
+    """
+    Structure candidates: CSI:FingerID's (``sirius:csi``), with the COSMIC
+    confidence of the top hit, or MSNovelist's (``sirius:msnovelist``).
+    """
     rows = []
     for rank, structure in enumerate(structures[:settings["candidates_kept"]], start=1):
         evidence = {"tanimoto": structure.tanimoto_similarity,
                     "databases": sorted({link.name for link in (structure.db_links or []) if link.name})}
-        if rank == 1 and annotations is not None:
+        if rank == 1 and annotations is not None and source == "sirius:csi":
             evidence["cosmic_confidence_exact"] = annotations.confidence_exact_match
             evidence["cosmic_confidence_approximate"] = annotations.confidence_approx_match
         rows.append({
-            "feature_id": feature_id, "source": "sirius:csi", "rank": rank,
+            "feature_id": feature_id, "source": source, "rank": rank,
             "name": structure.structure_name or structure.inchi_key, "smiles": structure.smiles,
             "inchikey": structure.inchi_key, "formula": structure.molecular_formula, "adduct": structure.adduct,
             "score": structure.csi_score, "score_name": "CSI:FingerID score", "proposed_level": "3",
@@ -182,6 +196,9 @@ def collect_candidates(api, pid: str, settings: dict):
         rows += formula_rows(feature_id, formulas, settings)
         structures = features_api.get_structure_candidates(pid, afid, opt_fields=["dbLinks"])
         rows += structure_rows(feature_id, structures, aligned.top_annotations, settings)
+        if settings["msnovelist"]:
+            de_novo = features_api.get_de_novo_structure_candidates(pid, afid, opt_fields=["dbLinks"])
+            rows += structure_rows(feature_id, de_novo, None, settings, source="sirius:msnovelist")
         if settings["canopus"] and formulas:
             try:
                 rows += class_rows(feature_id, features_api.get_best_matching_compound_classes(
@@ -193,17 +210,38 @@ def collect_candidates(api, pid: str, settings: dict):
 
 # ---- The whole run ---------------------------------------------------------------
 
+def ensure_login(api, models, account: dict | None) -> None:
+    """
+    Log SIRIUS in with the saved account if it is not logged in already.
+    SIRIUS keeps its session afterwards, so this usually happens once.
+    """
+    if api.account().is_logged_in():
+        return
+    if account is None:
+        raise RuntimeError(
+            "SIRIUS is not logged in. CSI:FingerID, CANOPUS and MSNovelist need a (free, academic) SIRIUS "
+            "account: enter it in the app (Setup tab, SIRIUS card), or log in once in the SIRIUS GUI.")
+    if not account.get("accept_terms"):
+        raise RuntimeError("Accept the SIRIUS terms of service in the app (Setup tab, SIRIUS card) to log in.")
+    try:
+        api.account().login(accept_terms=True, account_credentials=models.AccountCredentials(
+            username=account["username"], password=account["password"]))
+    except Exception as error:  # PySirius raises an ApiException with the server's message
+        raise RuntimeError(f"SIRIUS login failed for {account['username']}: {error}") from None
+    if not api.account().is_logged_in():
+        raise RuntimeError(f"SIRIUS login failed for {account['username']}: check the account in the Setup tab.")
+    log.info("SIRIUS: logged in as %s", account["username"])
+
+
 def annotate_with_sirius(api, models, entries: list[dict], settings: dict, fallback_adducts: list[str],
-                         project_file: Path, poll_s: float = 5.0):
+                         project_file: Path, poll_s: float = 5.0, account: dict | None = None):
     """
     Import the features into a new SIRIUS project, run the job, and return
     the candidates. ``api`` is a connected PySirius API, ``models`` the
-    PySirius module (or fakes, in tests).
+    PySirius module (or fakes, in tests), ``account`` the saved SIRIUS
+    account (used only if SIRIUS is not logged in).
     """
-    if not api.account().is_logged_in():
-        raise RuntimeError(
-            "SIRIUS is not logged in. CSI:FingerID and CANOPUS need a (free, academic) SIRIUS account: "
-            "log in once with the SIRIUS GUI, or with `sirius login` in the atlas-ms SIRIUS environment.")
+    ensure_login(api, models, account)
     pid = project_id(project_file)
     projects = api.projects()
     if any(p.project_id == pid for p in projects.get_projects()):
@@ -225,6 +263,11 @@ def annotate_with_sirius(api, models, entries: list[dict], settings: dict, fallb
     return candidates
 
 
+def _stop(signum, frame):
+    """SIGTERM handler: leave through the normal exit path (runs the `finally` blocks)."""
+    raise SystemExit(f"Stopped (signal {signum})")
+
+
 def run_sirius_job(input_file, out, project_file, settings: dict, fallback_adducts: list[str]) -> None:
     """
     File-level entry point of the ``run_sirius`` rule: attach to a running
@@ -239,8 +282,13 @@ def run_sirius_job(input_file, out, project_file, settings: dict, fallback_adduc
     api = sdk.attach_or_start_sirius(headless=True)
     if api is None:
         raise RuntimeError("Could not start or attach to SIRIUS 6 (see the messages above).")
+    # Stop (the app's Stop button, Ctrl+C) sends SIGTERM: turn it into an
+    # exception, so that the `finally` below still shuts SIRIUS down instead
+    # of leaving it running in the background.
+    signal.signal(signal.SIGTERM, _stop)
     try:
-        candidates = annotate_with_sirius(api, PySirius, entries, settings, fallback_adducts, Path(project_file))
+        candidates = annotate_with_sirius(api, PySirius, entries, settings, fallback_adducts, Path(project_file),
+                                          account=load_sirius_account())
     finally:
         if SiriusSDK.process is not None:  # started by this rule, not the user's own SIRIUS
             sdk.shutdown_sirius()

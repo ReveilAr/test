@@ -9,6 +9,9 @@ rule find_features:
     output:
         features="work/features/{sample}.featureXML",
         precursors="work/features/{sample}.precursors.tsv",
+    resources:
+        mem_mb=run_memory_mb,
+    threads: RUN_THREADS
     params:
         instrument=CFG.instrument.to_dict(),
         feature_finding=CFG.feature_finding.to_dict(),
@@ -41,6 +44,9 @@ rule annotate_run:
         trafo="work/alignment/{sample}.trafoXML",
     output:
         "work/annotated/{sample}.featureXML",
+    resources:
+        mem_mb=run_memory_mb,
+    threads: RUN_THREADS
     params:
         adducts=CFG.adducts.to_dict(),
     log:

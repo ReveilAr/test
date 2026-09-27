@@ -1,19 +1,22 @@
 """The app, without a browser: views built from the processed synthetic study."""
 
 import asyncio
+import json
 import shutil
 import socket
+import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from atlas_ms.app.data import load_results, read_mgf
-from atlas_ms.preprocessing.msdata import RunReader
 from atlas_ms.app.main import AtlasApp, free_port
 from atlas_ms.app.run_view import RunPanel
 from atlas_ms.app.setup_view import SetupTab
+from atlas_ms.preprocessing.msdata import RunReader
 from atlas_ms.project import Project
 from test_workflow import feature_of
 
@@ -212,3 +215,108 @@ def test_setup_edits_the_library_list(project_copy, tmp_path):
     saved = project_copy.load_config().library_search
     assert [lib["name"] for lib in saved.libraries] == ["standards", "insilico", "extra"]
     assert saved.library("extra")["path"] == str(library.resolve())
+
+
+# ---- Drag and drop, SIRIUS account, Quit ----------------------------------------
+
+def drop(dropper, name: str, content: bytes, pieces: int = 2) -> None:
+    """Simulate the browser uploading a file to a drop area, in ``pieces`` pieces."""
+    from types import SimpleNamespace
+
+    size = -(-len(content) // pieces)
+    for i in range(pieces):
+        dropper._process_event(SimpleNamespace(event_name="upload_event", data={
+            "name": name, "chunk": i + 1, "total_chunks": pieces, "type": "", "data": content[i * size:(i + 1) * size]}))
+
+
+def test_dropped_files_are_written_piece_by_piece(tmp_path):
+    from atlas_ms.app.uploads import drop_area
+
+    dropper = drop_area(str(tmp_path / "raw"), [".raw", ".mzml"], "drop")
+    drop(dropper, "run_1.RAW", b"0123456789", pieces=3)
+    assert (tmp_path / "raw" / "run_1.RAW").read_bytes() == b"0123456789"
+    assert dropper.saved == [str(tmp_path / "raw" / "run_1.RAW")] and not list((tmp_path / "raw").glob("*.part"))
+    dropper.get_root()  # renders in a page (only FileDropper's own settings reach the browser)
+    drop(dropper, "notes.txt", b"x")  # wrong type
+    drop(dropper, "../../escape.mzML", b"x")  # only the name is kept
+    assert dropper.rejected == ["notes.txt"] and (tmp_path / "raw" / "escape.mzML").exists()
+
+
+def test_setup_drops_samples_libraries_and_models(project_copy, tmp_path):
+    from atlas_ms.app.setup_view import MS2QUERY_DROP_DIR
+
+    setup = SetupTab(project_copy, account_file=tmp_path / "account.json")
+    drop(setup.sample_drop, "new_run.mzML", b"<mzML/>")
+    assert setup.samples.value["sample"].tolist()[-1] == "new_run"
+    drop(setup.library_drop, "My lib.msp", b"NAME: x\n")
+    library = setup.libraries.value.iloc[-1]
+    assert (library["name"], library["kind"]) == ("My_lib", "experimental")
+    assert Path(library["path"]) == project_copy.root / "libraries" / "My lib.msp"
+    setup.ms2deepscore_drop.folder = str(tmp_path / "models")  # not the real model cache
+    drop(setup.ms2deepscore_drop, "custom.pt", b"weights")
+    assert setup.config.scoring.ms2deepscore_model == str(tmp_path / "models" / "custom.pt")
+    setup.ms2query_drop.folder = str(tmp_path / "ms2query")
+    drop(setup.ms2query_drop, "library.sqlite", b"db")
+    assert setup.config.ms2query.models_dir == str(MS2QUERY_DROP_DIR)
+    # Remove the dropped sample again, and save.
+    setup.samples.selection = [len(setup.samples.value) - 1]
+    setup._remove_samples(None)
+    assert setup.save()
+    assert "new_run" not in project_copy.load_samples().index
+
+
+def test_sirius_login_is_saved_outside_the_project(project_copy, tmp_path):
+    account_file = tmp_path / "account.json"
+    setup = SetupTab(project_copy, account_file=account_file)
+    setup.sirius_user.value, setup.sirius_password.value = "me@lab.org", "secret"
+    assert not setup.save_sirius_login()  # terms of service not accepted
+    setup.sirius_terms.value = True
+    assert setup.save_sirius_login()
+    assert json.loads(account_file.read_text())["username"] == "me@lab.org"
+    assert setup.sirius_password.value == "" and "me@lab.org" in setup.sirius_status.object
+    assert setup.save() and "secret" not in project_copy.config_path.read_text()
+    setup.forget_sirius_login()
+    assert not account_file.exists()
+
+
+def test_new_project_from_dropped_files(tmp_path, study_files):
+    app = AtlasApp()
+    app.path.value = str(tmp_path / "dropped_project")
+    for file in study_files[:2]:
+        drop(app.raw_drop, file.name, file.read_bytes(), pieces=4)
+    app.create()
+    samples = Project(tmp_path / "dropped_project").load_samples()
+    assert list(samples.index) == ["ctrl_1", "ctrl_2"]
+    assert Path(samples.loc["ctrl_1", "file"]).parent == tmp_path / "dropped_project" / "raw"
+
+
+def test_quit_asks_twice_then_stops(processed_project):
+    stopped = []
+    app = AtlasApp(str(processed_project.root), on_quit=lambda: stopped.append(True))
+    assert app.quit_button.visible
+    app.quit()
+    assert not stopped and app.quit_button.label == "Click again to quit"
+    app.quit()
+    assert stopped == [True] and "stopped" in app.content.objects[0].object
+    assert not AtlasApp(str(processed_project.root)).quit_button.visible  # no server to stop
+
+
+def test_stopping_the_server_frees_its_port():
+    """A real server, stopped as by the Quit button: the process ends and the port is free."""
+    port = free_port(5390)
+    script = ("import threading; import panel as pn; from atlas_ms.app.main import stop_later\n"
+              f"server = pn.serve(lambda: pn.pane.Markdown('hi'), port={port}, show=False, start=False)\n"
+              "server.start(); stop_later(server, 0.5); server.io_loop.start(); print('stopped')")
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0 and "stopped" in result.stdout, result.stderr[-2000:]
+    assert free_port(port) == port
+
+
+def test_runner_limits_memory_and_threads(tmp_path):
+    from atlas_ms.runner import available_cores, snakemake_command, snakemake_env
+
+    command = snakemake_command(tmp_path)
+    assert command[command.index("--cores") + 1] == str(available_cores())
+    memory = int(command[command.index("--resources") + 1].split("=")[1])
+    assert 0 < memory < 10_000_000
+    assert snakemake_env()["OMP_NUM_THREADS"] == "1"

@@ -45,7 +45,7 @@ log = logging.getLogger(__name__)
 
 # Sources whose candidates are at most level 3 (structure predictions and
 # class-level evidence). Library hits are capped by their kind instead.
-CAPPED_AT_3 = ("lipid_rules", "sirius:csi", "sirius:canopus", "sirius:elgordo", "ms2query")
+CAPPED_AT_3 = ("lipid_rules", "sirius:csi", "sirius:msnovelist", "sirius:canopus", "sirius:elgordo", "ms2query")
 
 BEST_COLUMNS = ["feature_id", "name", "level", "label", "source", "score", "formula", "adduct", "smiles",
                 "inchikey", "lipid_class", "lipid_name", "lipid_species", "lipid_level", "n_candidates",

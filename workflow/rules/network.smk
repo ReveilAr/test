@@ -46,6 +46,9 @@ rule score_spectra:
         ),
     output:
         "work/network/candidates.parquet",
+    # MS2DeepScore (PyTorch) computes in parallel: all cores. The modified
+    # cosine runs on one core.
+    threads: workflow.cores if CFG.scoring.score == "ms2deepscore" else 1
     params:
         scoring=scoring_params(),
     log:

@@ -10,6 +10,8 @@ The ATLAS-MS app: one page with a sidebar (project, run) and tabs.
   (``network_view``), once the pipeline has produced results.
 * Annotation tab: every annotation candidate of the selected feature and
   its evidence (``annotation_view``).
+* Quit (bottom of the sidebar): stops a running pipeline and the app
+  itself, which frees its port (an app left running keeps its port busy).
 
 One project is open at a time. Opening another one rebuilds the page.
 """
@@ -25,6 +27,7 @@ from atlas_ms.preprocessing.msdata import RunReader
 from atlas_ms.app.network_view import NetworkTab
 from atlas_ms.app.run_view import RunPanel
 from atlas_ms.app.setup_view import SetupTab
+from atlas_ms.app.uploads import drop_area
 from atlas_ms.config import load_presets
 from atlas_ms.project import RAW_FORMATS, Project
 from atlas_ms.runner import snakemake_command
@@ -37,9 +40,15 @@ ACCENT = "#c51b8a"  # magenta
 class AtlasApp:
     """The page, and the project currently open in it."""
 
-    def __init__(self, project_dir: str | None = None, command=snakemake_command):
-        self.command = command  # Snakemake command builder (replaced in tests)
+    def __init__(self, project_dir: str | None = None, command=snakemake_command, on_quit=None):
+        """
+        ``command`` builds the Snakemake command (replaced in tests);
+        ``on_quit`` stops the server (given by ``serve``; no Quit button without it).
+        """
+        self.command = command
+        self.on_quit = on_quit
         self.project = None
+        self.run_panel = None
         self.content = pn.Column(sizing_mode="stretch_width")  # the tabs of the open project
         self.run_area = pn.Column(sizing_mode="stretch_width")  # the Run panel of the open project
 
@@ -48,17 +57,28 @@ class AtlasApp:
         open_button = pn.widgets.Button(label="Open", color="primary", width=100)
         open_button.on_click(lambda event: self.open(self.path.value))
         self.raw_dir = pn.widgets.TextInput(label="Raw files folder (.raw / .mzML)", sizing_mode="stretch_width")
+        # Or drop the files: they are copied into <project folder>/raw/ (see uploads.py).
+        self.raw_drop = drop_area("", [".raw", ".mzml"], "...or drop .raw / .mzML files here (copied into the project)")
+        self.raw_drop.param.watch(self._raw_rejected, "rejected")
+        self.path.param.watch(self._project_folder_changed, "value")
+        self._project_folder_changed()
         self.new_instrument = pn.widgets.Select(label="Instrument", options=list(load_presets("instruments")))
         self.new_adducts = pn.widgets.Select(label="Adducts", options=list(load_presets("adducts")))
         create_button = pn.widgets.Button(label="Create project", width=140)
         create_button.on_click(lambda event: self.create())
 
+        self.quit_button = pn.widgets.Button(label="Quit ATLAS-MS", color="danger", width=160,
+                                             visible=on_quit is not None)
+        self.quit_button.on_click(lambda event: self.quit())
+
         self.sidebar = [
             self.path, open_button,
-            pn.Card(self.raw_dir, self.new_instrument, self.new_adducts, create_button,
+            pn.Card(self.raw_dir, self.raw_drop, self.new_instrument, self.new_adducts, create_button,
                     title="New project (in the folder above)", collapsed=True, sizing_mode="stretch_width"),
             pn.layout.Divider(),
             self.run_area,
+            pn.layout.Divider(),
+            self.quit_button,
         ]
         if project_dir:
             self.open(project_dir)
@@ -77,12 +97,29 @@ class AtlasApp:
         self.run_area.objects = [self.run_panel.layout]
         self.refresh()
 
+    def _project_folder_changed(self, event=None) -> None:
+        """Dropped raw files go into <project folder>/raw/ (nowhere until a folder is typed)."""
+        folder = self.path.value.strip()
+        self.raw_drop.folder = str(Path(folder).expanduser() / "raw") if folder else ""
+
+    def _raw_rejected(self, event) -> None:
+        reason = "type the project folder first" if not self.raw_drop.folder else "not a .raw or .mzML file"
+        self.content.objects = [pn.pane.Alert(f"Not added ({reason}): {', '.join(event.new[len(event.old):])}",
+                                              alert_type="warning")]
+
     def create(self) -> None:
-        """Create a project in the "Project folder" from every raw file of the raw files folder."""
-        raw_dir = Path(self.raw_dir.value).expanduser()
-        files = sorted(f for f in raw_dir.iterdir() if f.suffix.lower() in RAW_FORMATS) if raw_dir.is_dir() else []
+        """
+        Create a project in the "Project folder" from every raw file of the raw
+        files folder and every dropped file.
+        """
+        files = []
+        if self.raw_dir.value.strip():
+            raw_dir = Path(self.raw_dir.value).expanduser()
+            files = sorted(f for f in raw_dir.iterdir() if f.suffix.lower() in RAW_FORMATS) if raw_dir.is_dir() else []
+        files += [Path(f) for f in self.raw_drop.saved if Path(f) not in files]
         if not files:
-            self.content.objects = [pn.pane.Alert(f"No .raw or .mzML file in '{raw_dir}'", alert_type="danger")]
+            self.content.objects = [pn.pane.Alert("No .raw or .mzML file: give a raw files folder or drop files",
+                                                  alert_type="danger")]
             return
         try:
             Project.create(self.path.value, files, instrument=self.new_instrument.value, adducts=self.new_adducts.value)
@@ -109,6 +146,20 @@ class AtlasApp:
             self.tabs.active = 1
         self.content.objects = [self.tabs]
 
+    def quit(self) -> None:
+        """
+        First click: ask for a confirmation. Second click: stop a running
+        pipeline, say goodbye and stop the server (``on_quit``).
+        """
+        if self.quit_button.label != "Click again to quit":
+            self.quit_button.label = "Click again to quit"
+            return
+        if self.run_panel is not None:
+            self.run_panel.stop()
+        self.content.objects = [pn.pane.Alert("ATLAS-MS has stopped: you can close this tab. "
+                                              "Start it again with `atlas-ms app`.", alert_type="info")]
+        self.on_quit()
+
     def page(self) -> pn.template.BaseTemplate:
         return pn.template.FastListTemplate(
             title="ATLAS-MS", sidebar=self.sidebar, main=[self.content], sidebar_width=340,
@@ -131,9 +182,27 @@ def free_port(port: int, attempts: int = 20) -> int:
     raise OSError(f"Ports {port}-{port + attempts - 1} are all in use: choose another one with --port")
 
 
+def stop_later(server, delay_s: float = 1.0) -> None:
+    """
+    Stop the web server after ``delay_s`` (time for the page to show its
+    goodbye): the port is freed and ``serve`` returns, ending the process.
+    """
+    def stop():
+        server.stop()
+        server.io_loop.stop()
+    server.io_loop.call_later(delay_s, stop)
+
+
 def serve(project_dir: str | None = None, port: int = 5006, show: bool = True) -> None:
-    """Start the app server; each browser tab gets its own page."""
+    """Start the app server; each browser tab gets its own page. Returns when Quit is clicked."""
     chosen = free_port(port)
     if chosen != port:
         print(f"Port {port} is already in use (another ATLAS-MS app still running?): using port {chosen}.")
-    pn.serve(lambda: AtlasApp(project_dir).page(), port=chosen, show=show, title="ATLAS-MS")
+    server = pn.serve(lambda: AtlasApp(project_dir, on_quit=lambda: stop_later(server)).page(),
+                      port=chosen, show=show, title="ATLAS-MS", start=False)
+    server.start()
+    try:
+        server.io_loop.start()  # runs until stop_later (Quit) or Ctrl+C
+    except KeyboardInterrupt:
+        pass
+    print("ATLAS-MS stopped.")
